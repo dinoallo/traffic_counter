@@ -2,22 +2,14 @@
 
 SHELL := /usr/bin/env bash
 
-EBPF_DIR ?= ebpf
-EBPF_OUT ?= target/bpf
+.PHONY: all build build-user fmt clippy test clean deps check-ebpf
 
-.PHONY: all build build-ebpf build-user fmt clippy test clean deps check-ebpf
-
-all: build-ebpf build
+all: build
 
 build: build-user
 
-build-user:
+build-user: check-ebpf
 	cargo build --release
-
-build-ebpf:
-	@echo "Building eBPF objects from $(EBPF_DIR) -> $(EBPF_OUT)"
-	mkdir -p $(EBPF_OUT)
-	$(SHELL) scripts/build-ebpf.sh "$(EBPF_DIR)" "$(EBPF_OUT)"
 
 fmt:
 	cargo fmt --all
@@ -37,4 +29,3 @@ check-ebpf:
 
 clean:
 	cargo clean
-	rm -rf $(EBPF_OUT)

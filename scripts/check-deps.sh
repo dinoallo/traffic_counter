@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-required=(cargo rustc clang bpftool)
+required=(cargo rustc clang)
 missing=()
 
 for cmd in "${required[@]}"; do

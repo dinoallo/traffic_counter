@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-EBPF_DIR=${1:-ebpf}
-OUT_DIR=${2:-target/bpf}
+EBPF_DIR=${1:-traffic-counter-ebpf/contrib}
+OUT_DIR=${2:-$EBPF_DIR/target/bpf}
 CC=${CC:-clang}
 CFLAGS=${CFLAGS:-"-O2 -target bpf -g -D__BPF_TRACING__"}
 
