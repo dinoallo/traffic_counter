@@ -4,6 +4,24 @@
 
 This project attaches to devices on the node, and count the traffic from/to IP addresses.
 
+## Project Structure
+
+The repository layout (updated) is described below for a first-time contributor. Each entry explains the purpose and where to look for implementation details.
+
+- `traffic-counter/`: The primary userspace binary crate that runs the traffic counter agent. Look here for the main runtime, CLI flags, and runtime integration (contains `Cargo.toml`, `build.rs`, and `src/main.rs`).
+- `traffic-counter-common/`: Shared library crate with common types, helper functions and interfaces used by both userspace and eBPF components.
+- `traffic-counter-ebpf/`: eBPF crate and eBPF-related build artifacts. This contains the eBPF program sources (Rust and/or C), `build.rs` for producing BPF objects, and a `contrib/` folder with example C helpers (e.g., `xdp_traffic_counter.c`). Treat this directory as the kernel-side codebase.
+- `openspec/`: Project documentation, proposals, and design artifacts. Includes `project.md` (this file), `AGENTS.md`, and change proposals under `changes/`.
+- `scripts/`: Convenience scripts for development tasks such as building eBPF objects and verifying host dependencies (`build-ebpf.sh`, `check-deps.sh`).
+- `Makefile`, top-level `Cargo.toml`, and `README.md`: Repository-level build targets, dependency management, and getting-started documentation.
+- `target/`: Build outputs produced by `cargo` and native build tooling. This directory is generated and normally ignored by version control.
+- `AGENTS.md`: Local contributor instructions and automation guidelines.
+
+Notes:
+
+- The `traffic-counter-ebpf` directory holds kernel-space code and may include architecture-specific build steps; consult `build.rs` and `contrib/` for example workflows.
+- The `target/` directory contains compiled artifacts — contributors will not normally edit files here.
+
 ## Tech Stack
 
 - **Language:** Rust (2024 edition)
@@ -23,6 +41,7 @@ Notes: keep crate versions up-to-date in `Cargo.toml`; pin a tested `aya` minor 
 - **Lints:** Enable `clippy` in CI and treat important lints as errors locally (`cargo clippy -- -D warnings`) for the userspace code. For eBPF programs follow `aya` guidance — use eBPF-friendly patterns and avoid unsupported std APIs.
 - **Naming:** Use `snake_case` for functions and variables, `CamelCase` for types. Place eBPF programs in `src/bpf` or `ebpf/` and userspace agent code in `src/`.
 - **Docs & comments:** Public functions and complex modules should have doc comments. Small helpers can use inline comments sparingly.
+- **Docs linting:** Use `markdownlint` (or `markdownlint-cli`) to lint project Markdown files. Run it locally and in CI to keep documentation style consistent (for example: `markdownlint '**/*.md'` or `npx markdownlint '**/*.md'`).
 
 ### Architecture Patterns
 
@@ -80,9 +99,9 @@ Install notes: developers should have `rustup`, `cargo`, `clang`, `llvm`, and `b
 
 Build helpers
 
-- A `Makefile` is provided at the repository root for common developer tasks: `make build` (userspace), `make build-ebpf` (compile eBPF C files), `make fmt`, `make clippy`, `make test`, and `make clean`.
+- A `Makefile` is provided at the repository root for common developer tasks: `make build` (userspace and ebpf code), `make fmt`, `make clippy`, `make test`, and `make clean`.
 - Helper scripts live in `scripts/`:
-  - `scripts/build-ebpf.sh` — compiles all `*.c` files from `ebpf/` into `target/bpf/` using `clang -target bpf`.
+  - `scripts/build-ebpf.sh` — compiles all `*.c` files from `traffic-counter-ebpf/contrib` into `traffic-counter-ebpf/contrib/target/bpf/` using `clang -target bpf`.
   - `scripts/check-deps.sh` — verifies `cargo`, `rustc`, `clang`, and `bpftool` are available on the PATH.
 
 Usage examples:
@@ -90,7 +109,6 @@ Usage examples:
 ```bash
 # Build userspace and eBPF objects
 make build
-make build-ebpf
 
 # Check required host tools
 make check-ebpf
