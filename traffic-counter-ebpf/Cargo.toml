@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 aya-ebpf = { workspace = true }
+traffic-counter-common = { workspace = true }
 
 [build-dependencies]
 which = { workspace = true }

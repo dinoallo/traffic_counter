@@ -51,6 +51,14 @@ Notes: keep crate versions up-to-date in `Cargo.toml`; pin a tested `aya` minor 
 - **Data model:** Primary unit is a per-IP traffic counter (bytes/packets) with optional 5-tuple flow keys for future extension.
 - **Export:** Expose metrics via a small HTTP endpoint or push metrics to Prometheus via an exporter component (recommended separate crate or binary).
 
+## Map Schemas and Pins
+
+- `traffic_counters_ip` — `PerCpuHashMap<IpKey, Counters>` pinned at `/sys/fs/bpf/traffic_counter/traffic_counters_ip`. Default capacity is 65,536 entries. Keys store IPv4/IPv6 addresses alongside the address family; values store per-CPU byte and packet counters.
+- `traffic_counters_flow` — `LruHashMap<FlowKey, Counters>` pinned at `/sys/fs/bpf/traffic_counter/traffic_counters_flow`. Default capacity is 32,768 entries and is only exercised when `--enable-flow-map` is set. Keys encode a compact 5-tuple (family, proto, src/dst IPs, ports).
+- `traffic_control` — `Array<ControlConfig>` pinned at `/sys/fs/bpf/traffic_counter/traffic_control`. Slot 0 stores runtime flags (enable/disable flow tracking), the configured capacities for each map, and a monotonically increasing `dropped_packets` counter that records parse failures.
+
+Userspace exposes `--pin`, `--flow-pin`, and `--control-pin` CLI flags to relocate these pins, along with `--ip-map-size`, `--flow-map-size`, and `--enable-flow-map` to adjust behaviour at load time.
+
 ### Testing Strategy
 
 - **Unit tests:** Keep pure-Rust logic covered by `cargo test` (userspace components). Aim for high coverage on parsers, aggregators, and exporters.
@@ -113,3 +121,10 @@ make build
 # Check required host tools
 make check-ebpf
 ```
+
+## Map Schema Migration Plan
+
+1. **Version the pins** – when evolving a map layout, create a new map name/pin (for example `traffic_counters_ip_v2`) while leaving the previous one intact. Update the loader to read both schemas in parallel during the transition.
+2. **Populate via userspace** – ship a one-time migration command (or automatic start-up routine) that walks the legacy pin, converts entries into the new layout, writes them into the new map, and flips the control flag when finished.
+3. **Communicate through control map** – store the active schema version inside `traffic_control` so userspace and observability tooling can react without guesswork.
+4. **Document and clean up** – update `README.md`, `openspec/changes/` proposals, and release notes with explicit instructions on how and when to unpin the legacy maps. After at least one minor release of overlap, add a cleanup step that removes the obsolete map names.

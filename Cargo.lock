@@ -672,10 +672,12 @@ dependencies = [
  "cargo_metadata",
  "clap",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "traffic-counter-common",
 ]
 
 [[package]]
@@ -690,6 +692,7 @@ name = "traffic-counter-ebpf"
 version = "0.1.0"
 dependencies = [
  "aya-ebpf",
+ "traffic-counter-common",
  "which",
 ]
 

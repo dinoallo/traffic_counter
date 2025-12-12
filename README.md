@@ -6,6 +6,40 @@ Traffic Counter is a per-node network traffic counting agent that uses eBPF to r
 
 ## Quick Start
 
+1. Build the userspace binary (this also embeds the latest `traffic-counter-ebpf` artifact):
+
+```bash
+cargo build --release
+```
+
+1. Attach the counter to an interface. Pick the attach point (`xdp`, `tc-ingress`, or `tc-egress`), select an XDP mode when needed, and override map sizes if the defaults are too small:
+
+```bash
+sudo target/release/traffic-counter attach \
+    --iface eth0 \
+    --attach-point xdp \
+    --xdp-mode driver \
+    --ip-map-size 131072 \
+    --enable-flow-map \
+    --flow-map-size 65536
+```
+
+1. Inspect counters from the pinned maps whenever you need to export or debug totals:
+
+```bash
+sudo target/release/traffic-counter dump-maps --pin /sys/fs/bpf/traffic_counter/traffic_counters_ip
+```
+
+### Map Pin Layout
+
+All long-lived maps are pinned under `/sys/fs/bpf/traffic_counter/` by default:
+
+- `traffic_counters_ip`: per-CPU hash map keyed by `IpKey` (source IP) that stores `Counters { bytes, packets }`.
+- `traffic_counters_flow`: LRU hash map keyed by a 5-tuple style `FlowKey`. It is idle until `--enable-flow-map` is passed.
+- `traffic_control`: array map storing runtime flags (`enable_flow_counters`), configured capacities, and drop counters.
+
+You can override any pin path via `--pin`, `--flow-pin`, or `--control-pin` when calling `attach`.
+
 ## Project Structure
 
 For first-time contributors, here's a short description of the repository layout and where to look.
@@ -134,6 +168,9 @@ Notes:
 
 ## Troubleshooting
 
+- If attaching the eBPF programs fails, double-check that `/sys/fs/bpf` is mounted and writable, then verify that `traffic_counters_ip`, `traffic_counters_flow`, and `traffic_control` exist (or can be created) under `/sys/fs/bpf/traffic_counter/`.
+- Oversized deployments may exhaust the default 65,536-entry IP map or the 32,768-entry flow map. Rerun `traffic-counter attach` with `--ip-map-size` and/or `--flow-map-size` bumped to the desired capacity.
+- Flow tracking remains idle until you pass `--enable-flow-map`; the control map reflects the current setting and exposes a `dropped_packets` counter you can inspect with `bpftool map dump`.
 - If attaching the ebpf programs fails, verify you have root or the necessary capabilities and that the interface exists.
 - Use `sudo bpftool prog show` and `bpftool map show` to inspect loaded programs and maps.
 
