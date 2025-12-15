@@ -1,6 +1,7 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::DefaultHasher},
     ffi::CString,
+    hash::{Hash, Hasher},
     io, mem,
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
     ptr, slice,
@@ -21,6 +22,7 @@ const ETH_P_IPV6: u16 = 0x86DD;
 const ETH_HEADER_LEN: usize = 14;
 const IPV4_MIN_HEADER: usize = 20;
 const IPV6_HEADER_LEN: usize = 40;
+const COUNTER_SHARDS: usize = 64;
 
 pub const DEFAULT_BLOCK_SIZE: u32 = 1 << 20; // 1 MiB
 pub const DEFAULT_BLOCK_COUNT: u32 = 64;
@@ -70,6 +72,7 @@ pub async fn run_packet_pipeline(opts: NodeOptions) -> Result<()> {
     validate_ring_config(&opts.ring)?;
 
     let counters = Arc::new(CounterTable::default());
+
     let running = Arc::new(AtomicBool::new(true));
 
     let mut handles = Vec::with_capacity(opts.workers);
@@ -79,20 +82,6 @@ pub async fn run_packet_pipeline(opts: NodeOptions) -> Result<()> {
         let counters_clone = counters.clone();
         let running_clone = running.clone();
         let ring_cfg = opts.ring;
-        /*
-        handles.push(task::spawn_blocking(move || {
-            handle_clone.block_on(async move {
-                worker_loop(
-                    worker_id,
-                    &iface,
-                    fanout,
-                    running_clone,
-                    counters_clone,
-                    ring_cfg,
-                )
-                .await
-            })
-        })); */
         handles.push(task::spawn(async move {
             worker_loop(
                 worker_id,
@@ -480,14 +469,30 @@ fn parse_ipv6(payload: &[u8]) -> Option<IpKey> {
     })
 }
 
-#[derive(Default)]
 struct CounterTable {
-    inner: Mutex<HashMap<IpKey, Counters>>,
+    shards: Vec<Mutex<HashMap<IpKey, Counters>>>,
 }
 
 impl CounterTable {
+    fn new() -> Self {
+        let mut shards = Vec::with_capacity(COUNTER_SHARDS);
+        for _ in 0..COUNTER_SHARDS {
+            shards.push(Mutex::new(HashMap::new()));
+        }
+        Self { shards }
+    }
+
+    fn shard_index(&self, key: &IpKey) -> usize {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        (hasher.finish() as usize) % self.shards.len().max(1)
+    }
+
     fn increment(&self, key: IpKey, bytes: u64) {
-        let mut guard = self.inner.lock().expect("counter table mutex poisoned");
+        let idx = self.shard_index(&key);
+        let mut guard = self.shards[idx]
+            .lock()
+            .expect("counter shard mutex poisoned");
         let entry = guard.entry(key).or_insert(Counters {
             bytes: 0,
             packets: 0,
@@ -497,26 +502,29 @@ impl CounterTable {
     }
 
     fn snapshot(&self) -> HashMap<IpKey, Counters> {
-        self.inner
-            .lock()
-            .expect("counter table mutex poisoned")
-            .clone()
+        let mut merged = HashMap::new();
+        for shard in &self.shards {
+            let guard = shard.lock().expect("counter shard mutex poisoned");
+            for (key, counters) in guard.iter() {
+                merged.insert(*key, *counters);
+            }
+        }
+        merged
+    }
+}
+
+impl Default for CounterTable {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 fn log_snapshot(table: &CounterTable) {
     let snapshot = table.snapshot();
-    let mut total_bytes: u128 = 0;
-    let mut total_packets: u128 = 0;
-    for counters in snapshot.values() {
-        total_bytes = total_bytes.wrapping_add(counters.bytes as u128);
-        total_packets = total_packets.wrapping_add(counters.packets as u128);
+    for (ip, counters) in &snapshot {
+        println!(
+            "IP {:?} - bytes: {} packets: {}",
+            ip, counters.bytes, counters.packets
+        );
     }
-
-    println!(
-        "Packet socket stats: entries={} total_bytes={} total_packets={}",
-        snapshot.len(),
-        total_bytes,
-        total_packets
-    );
 }
