@@ -672,8 +672,34 @@ fn log_snapshot(table: &CounterTable) {
         for (ip, counters) in &snapshot {
             println!(
                 "IP {:?} - bytes: {} packets: {}",
-                ip, counters.bytes, counters.packets
+                ipkey2string(ip),
+                counters.bytes,
+                counters.packets
             );
         }
+    }
+}
+
+fn ipkey2string(key: &IpKey) -> String {
+    match key.family as i32 {
+        libc::AF_INET => {
+            let raw = (key.addr_lo & 0xFFFFFFFF) as u32;
+            let octets = raw.to_be_bytes();
+            format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3])
+        }
+        libc::AF_INET6 => {
+            let hi_bytes = key.addr_hi.to_be_bytes();
+            let lo_bytes = key.addr_lo.to_be_bytes();
+            let segments: Vec<String> = hi_bytes
+                .chunks(2)
+                .chain(lo_bytes.chunks(2))
+                .map(|chunk| {
+                    let seg = u16::from_be_bytes([chunk[0], chunk[1]]);
+                    format!("{:x}", seg)
+                })
+                .collect();
+            segments.join(":")
+        }
+        _ => "unknown".to_string(),
     }
 }
