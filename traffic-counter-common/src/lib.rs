@@ -4,7 +4,7 @@
 // Keep this crate `no_std` friendly so it can be used from eBPF code.
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub struct IpKey {
     pub family: u8,
     pub pad: [u8; 7],
@@ -13,14 +13,14 @@ pub struct IpKey {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub struct Counters {
     pub bytes: u64,
     pub packets: u64,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub struct FlowKey {
     pub family: u8,
     pub proto: u8,

@@ -2,13 +2,16 @@
 
 SHELL := /usr/bin/env bash
 
-.PHONY: all build build-user fmt clippy test clean deps check-ebpf
+.PHONY: all build build-debug build-release fmt clippy test clean deps check-ebpf
 
 all: build
 
-build: build-user
+build: build-debug
 
-build-user: check-ebpf
+build-debug: check-ebpf
+	cargo build
+
+build-release: check-ebpf
 	cargo build --release
 
 fmt:

@@ -13,6 +13,7 @@ tokio = { workspace = true, features = [
     "rt",
     "rt-multi-thread",
     "net",
+    "time",
     "signal",
 ] }
 clap = { workspace = true, features = ["derive"] }
@@ -22,6 +23,9 @@ thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0" }
 traffic-counter-common = { workspace = true, features = ["user"] }
+libc = { workspace = true }
+hyper = { version = "0.14", features = ["full"] }
+prometheus = "0.13"
 
 [build-dependencies]
 anyhow = { workspace = true }

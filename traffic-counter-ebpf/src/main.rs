@@ -1,7 +1,8 @@
 #![no_std]
 #![no_main]
 
-use aya_ebpf::bindings::{TC_ACT_OK, xdp_action};
+use aya_ebpf::bindings::TC_ACT_UNSPEC;
+use aya_ebpf::bindings::xdp_action::XDP_PASS;
 use aya_ebpf::macros::{classifier, map, xdp};
 use aya_ebpf::maps::{Array, LruHashMap, PerCpuHashMap};
 use aya_ebpf::programs::{TcContext, XdpContext};
@@ -30,7 +31,7 @@ pub fn xdp_traffic_counter(ctx: XdpContext) -> u32 {
     if process_packet(ctx.data() as *const u8, ctx.data_end() as *const u8).is_err() {
         record_drop();
     }
-    xdp_action::XDP_PASS
+    XDP_PASS
 }
 
 #[classifier]
@@ -38,7 +39,7 @@ pub fn tc_traffic_counter(ctx: TcContext) -> i32 {
     if process_packet(ctx.data() as *const u8, ctx.data_end() as *const u8).is_err() {
         record_drop();
     }
-    TC_ACT_OK
+    TC_ACT_UNSPEC
 }
 
 fn process_packet(data: *const u8, data_end: *const u8) -> Result<(), ()> {
