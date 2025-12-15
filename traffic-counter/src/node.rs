@@ -1,9 +1,13 @@
 use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
     ffi::CString,
+    fs::File,
     hash::{Hash, Hasher},
-    io, mem,
+    io::{self, BufRead, BufReader},
+    mem,
+    net::IpAddr,
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
+    path::{Path, PathBuf},
     ptr, slice,
     sync::{
         Arc, Mutex,
@@ -43,6 +47,84 @@ pub struct NodeOptions {
     pub fanout_group: Option<u16>,
     pub report_interval: Duration,
     pub ring: RingConfig,
+    pub ignore_list: Option<PathBuf>,
+}
+
+struct IgnoreList {
+    entries: HashSet<IpKey>,
+}
+
+impl IgnoreList {
+    fn empty() -> Self {
+        Self {
+            entries: HashSet::new(),
+        }
+    }
+
+    fn from_path(path: &Path) -> Result<Self> {
+        let file = File::open(path)
+            .with_context(|| format!("failed to open ignore list at {}", path.display()))?;
+        let reader = BufReader::new(file);
+        let mut entries = HashSet::new();
+
+        for (line_no, line) in reader.lines().enumerate() {
+            let line = line.with_context(|| {
+                format!(
+                    "failed to read line {} of ignore list {}",
+                    line_no + 1,
+                    path.display()
+                )
+            })?;
+            let trimmed = line.split('#').next().unwrap_or("").trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let addr: IpAddr = trimmed.parse().with_context(|| {
+                format!(
+                    "invalid IP address '{}' on line {} of {}",
+                    trimmed,
+                    line_no + 1,
+                    path.display()
+                )
+            })?;
+            entries.insert(ipaddr_to_key(addr));
+        }
+
+        Ok(Self { entries })
+    }
+
+    fn contains(&self, key: &IpKey) -> bool {
+        self.entries.contains(key)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+fn ipaddr_to_key(addr: IpAddr) -> IpKey {
+    match addr {
+        IpAddr::V4(v4) => {
+            let raw = u32::from_be_bytes(v4.octets());
+            IpKey {
+                family: libc::AF_INET as u8,
+                pad: [0; 7],
+                addr_lo: raw as u64,
+                addr_hi: 0,
+            }
+        }
+        IpAddr::V6(v6) => {
+            let octets = v6.octets();
+            let addr_hi = u64::from_be_bytes(octets[0..8].try_into().expect("slice sized"));
+            let addr_lo = u64::from_be_bytes(octets[8..16].try_into().expect("slice sized"));
+            IpKey {
+                family: libc::AF_INET6 as u8,
+                pad: [0; 7],
+                addr_lo,
+                addr_hi,
+            }
+        }
+    }
 }
 
 fn validate_ring_config(cfg: &RingConfig) -> Result<()> {
@@ -71,6 +153,11 @@ pub async fn run_packet_pipeline(opts: NodeOptions) -> Result<()> {
     }
     validate_ring_config(&opts.ring)?;
 
+    let ignore_list = Arc::new(match opts.ignore_list.as_ref() {
+        Some(path) => IgnoreList::from_path(path)?,
+        None => IgnoreList::empty(),
+    });
+
     let counters = Arc::new(CounterTable::default());
 
     let running = Arc::new(AtomicBool::new(true));
@@ -82,6 +169,7 @@ pub async fn run_packet_pipeline(opts: NodeOptions) -> Result<()> {
         let counters_clone = counters.clone();
         let running_clone = running.clone();
         let ring_cfg = opts.ring;
+        let ignore_clone = ignore_list.clone();
         handles.push(task::spawn(async move {
             worker_loop(
                 worker_id,
@@ -90,6 +178,7 @@ pub async fn run_packet_pipeline(opts: NodeOptions) -> Result<()> {
                 running_clone,
                 counters_clone,
                 ring_cfg,
+                ignore_clone,
             )
             .await
         }));
@@ -137,10 +226,11 @@ async fn worker_loop(
     running: Arc<AtomicBool>,
     counters: Arc<CounterTable>,
     ring_cfg: RingConfig,
+    ignore_list: Arc<IgnoreList>,
 ) -> Result<()> {
     let mut socket = PacketSocket::bind(iface, fanout_group, ring_cfg)
         .with_context(|| format!("worker {worker_id}: failed to bind packet socket"))?;
-    socket.pump(&running, counters).await
+    socket.pump(&running, counters, &ignore_list).await
 }
 
 struct PacketSocket {
@@ -185,12 +275,17 @@ impl PacketSocket {
         Ok(Self { fd: owned_fd, ring })
     }
 
-    async fn pump(&mut self, running: &AtomicBool, counters: Arc<CounterTable>) -> Result<()> {
+    async fn pump(
+        &mut self,
+        running: &AtomicBool,
+        counters: Arc<CounterTable>,
+        ignore_list: &IgnoreList,
+    ) -> Result<()> {
         let block_nr = self.ring.block_count() as usize;
         while running.load(Ordering::Relaxed) {
             let mut made_progress = false;
             for _ in 0..block_nr {
-                if self.ring.consume_next_block(&counters)? {
+                if self.ring.consume_next_block(&counters, ignore_list)? {
                     made_progress = true;
                 }
             }
@@ -342,13 +437,22 @@ impl PacketRing {
         self.req.tp_block_size as usize
     }
 
-    fn consume_next_block(&mut self, counters: &CounterTable) -> Result<bool> {
+    fn consume_next_block(
+        &mut self,
+        counters: &CounterTable,
+        ignore_list: &IgnoreList,
+    ) -> Result<bool> {
         let idx = self.current_block;
         self.current_block = (self.current_block + 1) % self.req.tp_block_nr.max(1);
-        self.consume_block(idx, counters)
+        self.consume_block(idx, counters, ignore_list)
     }
 
-    fn consume_block(&mut self, idx: u32, counters: &CounterTable) -> Result<bool> {
+    fn consume_block(
+        &mut self,
+        idx: u32,
+        counters: &CounterTable,
+        ignore_list: &IgnoreList,
+    ) -> Result<bool> {
         let block_ptr = unsafe { self.base.add(idx as usize * self.block_size()) };
         let desc = block_ptr as *mut libc::tpacket_block_desc;
         let status = unsafe { (*desc).hdr.bh1.block_status };
@@ -358,6 +462,7 @@ impl PacketRing {
 
         fence(Ordering::Acquire);
         unsafe {
+            let ignore_is_empty = ignore_list.is_empty();
             let hdr = &mut (*desc).hdr.bh1;
             let mut offset = hdr.offset_to_first_pkt as usize;
             let block_size = self.block_size();
@@ -378,8 +483,10 @@ impl PacketRing {
                     break;
                 }
                 let data = slice::from_raw_parts(block_ptr.add(data_offset), snaplen);
-                if let Some(key) = parse_frame(data) {
-                    counters.increment(key, packet_len as u64);
+                if let Some(addrs) = parse_frame(data) {
+                    if ignore_is_empty || !ignore_list.contains(&addrs.dst) {
+                        counters.increment(addrs.src, packet_len as u64);
+                    }
                 }
                 if next == 0 {
                     break;
@@ -422,7 +529,12 @@ async fn wait_for_read(fd: RawFd) -> Result<()> {
     }
 }
 
-fn parse_frame(frame: &[u8]) -> Option<IpKey> {
+struct PacketAddrs {
+    src: IpKey,
+    dst: IpKey,
+}
+
+fn parse_frame(frame: &[u8]) -> Option<PacketAddrs> {
     if frame.len() < ETH_HEADER_LEN {
         return None;
     }
@@ -434,7 +546,7 @@ fn parse_frame(frame: &[u8]) -> Option<IpKey> {
     }
 }
 
-fn parse_ipv4(payload: &[u8]) -> Option<IpKey> {
+fn parse_ipv4(payload: &[u8]) -> Option<PacketAddrs> {
     if payload.len() < IPV4_MIN_HEADER {
         return None;
     }
@@ -447,25 +559,44 @@ fn parse_ipv4(payload: &[u8]) -> Option<IpKey> {
         return None;
     }
     let src = u32::from_be_bytes(payload[12..16].try_into().ok()?);
-    Some(IpKey {
-        family: libc::AF_INET as u8,
-        pad: [0; 7],
-        addr_lo: src as u64,
-        addr_hi: 0,
+    let dst = u32::from_be_bytes(payload[16..20].try_into().ok()?);
+    Some(PacketAddrs {
+        src: IpKey {
+            family: libc::AF_INET as u8,
+            pad: [0; 7],
+            addr_lo: src as u64,
+            addr_hi: 0,
+        },
+        dst: IpKey {
+            family: libc::AF_INET as u8,
+            pad: [0; 7],
+            addr_lo: dst as u64,
+            addr_hi: 0,
+        },
     })
 }
 
-fn parse_ipv6(payload: &[u8]) -> Option<IpKey> {
+fn parse_ipv6(payload: &[u8]) -> Option<PacketAddrs> {
     if payload.len() < IPV6_HEADER_LEN {
         return None;
     }
     let src_hi = u64::from_be_bytes(payload[8..16].try_into().ok()?);
     let src_lo = u64::from_be_bytes(payload[16..24].try_into().ok()?);
-    Some(IpKey {
-        family: libc::AF_INET6 as u8,
-        pad: [0; 7],
-        addr_lo: src_lo,
-        addr_hi: src_hi,
+    let dst_hi = u64::from_be_bytes(payload[24..32].try_into().ok()?);
+    let dst_lo = u64::from_be_bytes(payload[32..40].try_into().ok()?);
+    Some(PacketAddrs {
+        src: IpKey {
+            family: libc::AF_INET6 as u8,
+            pad: [0; 7],
+            addr_lo: src_lo,
+            addr_hi: src_hi,
+        },
+        dst: IpKey {
+            family: libc::AF_INET6 as u8,
+            pad: [0; 7],
+            addr_lo: dst_lo,
+            addr_hi: dst_hi,
+        },
     })
 }
 

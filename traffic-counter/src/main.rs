@@ -1,5 +1,4 @@
-use std::process::exit;
-use std::time::Duration;
+use std::{path::PathBuf, process::exit, time::Duration};
 
 use anyhow::Result;
 use clap::{Args, CommandFactory, Parser, Subcommand};
@@ -47,6 +46,9 @@ struct NodeCommand {
     /// Milliseconds before an idle block is recycled
     #[arg(long, value_name = "MILLIS", default_value_t = node::DEFAULT_BLOCK_TIMEOUT_MS)]
     block_timeout_ms: u32,
+    /// File containing IPv4/IPv6 destination addresses to ignore (one per line)
+    #[arg(long, value_name = "PATH")]
+    ignore_file: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -73,6 +75,7 @@ async fn run() -> Result<()> {
                     frame_size: cmd.frame_size,
                     block_timeout_ms: cmd.block_timeout_ms,
                 },
+                ignore_list: cmd.ignore_file,
             };
             node::run_packet_pipeline(opts).await?;
         }
