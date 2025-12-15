@@ -2,7 +2,7 @@ use std::process::exit;
 use std::time::Duration;
 
 use anyhow::Result;
-use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 
 mod node;
 
@@ -21,6 +21,7 @@ enum Commands {
 }
 
 #[derive(Args)]
+#[command(author, version, about = "Count traffic of a network interface on a node", long_about = None)]
 struct NodeCommand {
     /// Network interface to join via AF_PACKET
     #[arg(long, value_name = "IFACE")]
@@ -46,9 +47,6 @@ struct NodeCommand {
     /// Milliseconds before an idle block is recycled
     #[arg(long, value_name = "MILLIS", default_value_t = node::DEFAULT_BLOCK_TIMEOUT_MS)]
     block_timeout_ms: u32,
-    /// Disable the socket-level classic BPF filter
-    #[arg(long = "no-bpf-filter", action = ArgAction::SetTrue)]
-    disable_bpf_filter: bool,
 }
 
 #[tokio::main]
