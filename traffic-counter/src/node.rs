@@ -501,6 +501,7 @@ impl CounterTable {
         entry.packets = entry.packets.wrapping_add(1);
     }
 
+    /*
     fn snapshot(&self) -> HashMap<IpKey, Counters> {
         let mut merged = HashMap::new();
         for shard in &self.shards {
@@ -511,6 +512,21 @@ impl CounterTable {
         }
         merged
     }
+    */
+
+    fn snapshot_shard(&self, shard_idx: usize) -> HashMap<IpKey, Counters> {
+        let mut snapshot = HashMap::new();
+        if shard_idx < self.shards.len() {
+            let mut guard = self.shards[shard_idx]
+                .lock()
+                .expect("counter shard mutex poisoned");
+            for (key, counters) in guard.iter() {
+                snapshot.insert(*key, *counters);
+            }
+            guard.clear();
+        }
+        snapshot
+    }
 }
 
 impl Default for CounterTable {
@@ -520,11 +536,13 @@ impl Default for CounterTable {
 }
 
 fn log_snapshot(table: &CounterTable) {
-    let snapshot = table.snapshot();
-    for (ip, counters) in &snapshot {
-        println!(
-            "IP {:?} - bytes: {} packets: {}",
-            ip, counters.bytes, counters.packets
-        );
+    for shard_idx in 0..table.shards.len() {
+        let snapshot = table.snapshot_shard(shard_idx);
+        for (ip, counters) in &snapshot {
+            println!(
+                "IP {:?} - bytes: {} packets: {}",
+                ip, counters.bytes, counters.packets
+            );
+        }
     }
 }
