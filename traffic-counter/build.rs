@@ -140,14 +140,13 @@ fn build_ebpf_quiet<'a>(
         for message in Message::parse_stream(stdout) {
             match message.expect("valid JSON") {
                 Message::CompilerArtifact(Artifact {
-                    executable,
+                    executable: Some(executable),
                     target: Target { name, .. },
                     ..
                 }) => {
-                    if let Some(executable) = executable {
-                        executables.push((name, executable.into_std_path_buf()));
-                    }
+                    executables.push((name, executable.into_std_path_buf()));
                 }
+                Message::CompilerArtifact(Artifact { .. }) => {}
                 Message::CompilerMessage(CompilerMessage { message, .. }) => {
                     if let Some(rendered) = message.rendered {
                         for line in rendered.lines() {

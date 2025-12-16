@@ -202,11 +202,11 @@ fn validate_ring_config(cfg: &RingConfig) -> Result<()> {
     if cfg.block_size == 0 || cfg.block_count == 0 || cfg.frame_size == 0 {
         return Err(anyhow!("ring parameters must be non-zero"));
     }
-    if cfg.block_size % cfg.frame_size != 0 {
+    if !cfg.block_size.is_multiple_of(cfg.frame_size) {
         return Err(anyhow!("block size must be a multiple of frame size"));
     }
     let alignment = libc::TPACKET_ALIGNMENT as u32;
-    if cfg.block_size % alignment != 0 || cfg.frame_size % alignment != 0 {
+    if !cfg.block_size.is_multiple_of(alignment) || !cfg.frame_size.is_multiple_of(alignment) {
         return Err(anyhow!(
             "block and frame sizes must be aligned to {} bytes",
             alignment
@@ -239,25 +239,17 @@ pub async fn run_packet_pipeline(opts: NodeOptions) -> Result<()> {
 
     let mut handles = Vec::with_capacity(opts.workers);
     for worker_id in 0..opts.workers {
-        let iface = opts.iface.clone();
-        let fanout = opts.fanout_group;
         let counters_clone = counters.clone();
         let running_clone = running.clone();
-        let ring_cfg = opts.ring;
-        let ignore_clone = ignore_list.clone();
-        let accept_clone = accept_list.clone();
+        let ctx = WorkerContext {
+            iface: opts.iface.clone(),
+            fanout_group: opts.fanout_group,
+            ring_cfg: opts.ring,
+            ignore_list: ignore_list.clone(),
+            accept_list: accept_list.clone(),
+        };
         handles.push(task::spawn(async move {
-            worker_loop(
-                worker_id,
-                &iface,
-                fanout,
-                running_clone,
-                counters_clone,
-                ring_cfg,
-                ignore_clone,
-                accept_clone,
-            )
-            .await
+            worker_loop(worker_id, running_clone, counters_clone, ctx).await
         }));
     }
 
@@ -296,17 +288,28 @@ pub async fn run_packet_pipeline(opts: NodeOptions) -> Result<()> {
     Ok(())
 }
 
-async fn worker_loop(
-    worker_id: usize,
-    iface: &str,
+struct WorkerContext {
+    iface: String,
     fanout_group: Option<u16>,
-    running: Arc<AtomicBool>,
-    counters: Arc<CounterTable>,
     ring_cfg: RingConfig,
     ignore_list: Arc<AddressList>,
     accept_list: Arc<AddressList>,
+}
+
+async fn worker_loop(
+    worker_id: usize,
+    running: Arc<AtomicBool>,
+    counters: Arc<CounterTable>,
+    ctx: WorkerContext,
 ) -> Result<()> {
-    let mut socket = PacketSocket::bind(iface, fanout_group, ring_cfg)
+    let WorkerContext {
+        iface,
+        fanout_group,
+        ring_cfg,
+        ignore_list,
+        accept_list,
+    } = ctx;
+    let mut socket = PacketSocket::bind(&iface, fanout_group, ring_cfg)
         .with_context(|| format!("worker {worker_id}: failed to bind packet socket"))?;
     socket
         .pump(&running, counters, &ignore_list, &accept_list)
@@ -461,9 +464,6 @@ impl PacketRing {
         let frame_nr = frames_per_block
             .checked_mul(cfg.block_count)
             .ok_or_else(|| anyhow!("ring size overflow"))?;
-        if frame_nr > u32::MAX {
-            return Err(anyhow!("ring frame count exceeds u32::MAX"));
-        }
 
         let req = libc::tpacket_req3 {
             tp_block_size: cfg.block_size,
