@@ -29,10 +29,16 @@ jobs:
           toolchain: stable
           profile: minimal
           override: true
-
-      - name: Install formatting and lint components
-        run: |
-          rustup component add rustfmt clippy || true
+          default: true
+          components: rustfmt clippy
+      
+      - name: Install Nightly toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          profile: minimal
+          override: true
+          components: rust-src
 
       - name: Install eBPF build dependencies and target
         run: |
