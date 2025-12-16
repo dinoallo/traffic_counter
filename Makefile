@@ -2,31 +2,28 @@
 
 SHELL := /usr/bin/env bash
 
-.PHONY: all build build-debug build-release fmt clippy test clean deps check-ebpf
+.PHONY: all build build-debug build-release fmt clippy test clean check-deps
 
 all: build
 
 build: build-debug
 
-build-debug: check-ebpf
+build-debug: check-deps
 	cargo build
 
-build-release: check-ebpf
+build-release: check-deps
 	cargo build --release
 
 fmt:
-	cargo fmt --all
+	cargo fmt --all -- --check
 
 clippy:
 	cargo clippy --all-targets --all-features -- -D warnings
 
 test:
-	cargo test
+	cargo test --all-features --quiet
 
-deps:
-	@echo "Required: cargo, rustc, clang, bpftool"
-
-check-ebpf:
+check-deps:
 	@echo "Checking for eBPF toolchain"
 	$(SHELL) scripts/check-deps.sh
 
