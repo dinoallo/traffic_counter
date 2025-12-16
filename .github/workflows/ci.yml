@@ -30,7 +30,6 @@ jobs:
           profile: minimal
           override: true
           default: true
-          components: rustfmt clippy
       
       - name: Install Nightly toolchain
         uses: actions-rs/toolchain@v1
@@ -39,11 +38,16 @@ jobs:
           profile: minimal
           override: true
           components: rust-src
+      
+      - name: Install cargo components
+        run: |
+          rustup component add clippy rustfmt --toolchain stable
+          rustup component add clippy rustfmt --toolchain nightly
 
       - name: Install eBPF build dependencies and target
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm libelf-dev pkg-config gcc make libclang-dev || true
+          sudo apt-get install -y clang llvm libelf-dev pkg-config gcc make libclang-dev
 
       - name: Format check
         run: cargo fmt --all -- --check
