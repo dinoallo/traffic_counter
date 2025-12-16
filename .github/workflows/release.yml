@@ -13,13 +13,50 @@ on:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+          default: true
+          components: clippy,rustfmt
+      
+      - name: Install Nightly toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          profile: minimal
+          override: true
+          components: clippy,rustfmt,rust-src
+
+      - name: Install build dependencies and target
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make
+          
+      - name: Install bpf linker
+        run: |
+          cargo install bpf-linker
+      
+      - name: Check dependencies
+        run: make check-deps
 
       - name: Build release binary
         run: cargo build --release
