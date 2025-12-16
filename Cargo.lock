@@ -999,7 +999,7 @@ dependencies = [
 
 [[package]]
 name = "traffic-counter"
-version = "0.1.0"
+version = "0.0.0-alpha"
 dependencies = [
  "anyhow",
  "aya",
@@ -1021,14 +1021,14 @@ dependencies = [
 
 [[package]]
 name = "traffic-counter-common"
-version = "0.1.0"
+version = "0.0.0-alpha"
 dependencies = [
  "aya",
 ]
 
 [[package]]
 name = "traffic-counter-ebpf"
-version = "0.1.0"
+version = "0.0.0-alpha"
 dependencies = [
  "aya-ebpf",
  "traffic-counter-common",
