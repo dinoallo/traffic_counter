@@ -59,7 +59,7 @@ jobs:
         run: make check-deps
 
       - name: Build release binary
-        run: cargo build --release
+        run: make build-release
 
       - name: Package artifact
         run: |
