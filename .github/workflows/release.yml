@@ -1,0 +1,41 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag/version (e.g. v0.1.0)"
+        required: true
+      notes:
+        description: "Optional release notes"
+        required: false
+        default: ""
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package artifact
+        run: |
+          mkdir -p dist
+          cp target/release/traffic-counter dist/traffic-counter
+          tar -C dist -czf traffic-counter-${{ inputs.version }}-linux-x86_64.tar.gz traffic-counter
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.version }}
+          body: ${{ inputs.notes }}
+          files: traffic-counter-${{ inputs.version }}-linux-x86_64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
