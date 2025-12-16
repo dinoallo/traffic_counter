@@ -5,6 +5,12 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 
 mod node;
 
+const VERSION: &str = env!("TRAFFIC_COUNTER_VERSION");
+const GIT_DESCRIBE: &str = match option_env!("TRAFFIC_COUNTER_GIT_DESC") {
+    Some(desc) => desc,
+    None => "unknown",
+};
+
 #[derive(Parser)]
 #[command(name = "traffic-counter")]
 #[command(about = "Traffic counter userspace agent", long_about = None)]
@@ -17,10 +23,11 @@ struct Cli {
 enum Commands {
     /// Run packet-socket ingestion pipeline
     Node(NodeCommand),
+    Version(VersionCommand),
 }
 
 #[derive(Args)]
-#[command(author, version, about = "Count traffic of a network interface on a node", long_about = None)]
+#[command(author, about = "Count traffic of a network interface on a node", long_about = None)]
 struct NodeCommand {
     /// Network interface to join via AF_PACKET
     #[arg(long, value_name = "IFACE")]
@@ -56,6 +63,8 @@ struct NodeCommand {
     #[arg(long, value_name = "PATH")]
     accept_source_file: Option<PathBuf>,
 }
+#[derive(Args)]
+struct VersionCommand;
 
 #[tokio::main]
 async fn main() {
@@ -86,6 +95,9 @@ async fn run() -> Result<()> {
                 accept_source_list: cmd.accept_source_file,
             };
             node::run_packet_pipeline(opts).await?;
+        }
+        Some(Commands::Version(_)) => {
+            println!("traffic-counter {VERSION} ({GIT_DESCRIBE})");
         }
         None => {
             Cli::command().print_help().ok();

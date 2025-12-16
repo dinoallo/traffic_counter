@@ -14,6 +14,11 @@ use aya_build::{Package, Toolchain};
 use cargo_metadata::{Artifact, CompilerMessage, Message, Target};
 
 fn main() -> anyhow::Result<()> {
+    embed_git_metadata()?;
+    println!(
+        "cargo:rustc-env=TRAFFIC_COUNTER_VERSION={}",
+        env!("CARGO_PKG_VERSION")
+    );
     let cargo_metadata::Metadata { packages, .. } = cargo_metadata::MetadataCommand::new()
         .no_deps()
         .exec()
@@ -36,6 +41,21 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
     build_ebpf_quiet([ebpf_package], Toolchain::default())
+}
+
+fn embed_git_metadata() -> Result<()> {
+    let output = Command::new("git")
+        .args(["describe", "--always", "--dirty", "--tags"])
+        .output()
+        .context("failed to run git describe")?;
+    if output.status.success() {
+        let describe = String::from_utf8(output.stdout)
+            .context("git describe produced non-utf8 output")?
+            .trim()
+            .to_string();
+        println!("cargo:rustc-env=TRAFFIC_COUNTER_GIT_DESC={describe}");
+    }
+    Ok(())
 }
 
 fn build_ebpf_quiet<'a>(
