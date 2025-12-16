@@ -26,6 +26,7 @@ traffic-counter-common = { workspace = true, features = ["user"] }
 libc = { workspace = true }
 hyper = { version = "0.14", features = ["full"] }
 prometheus = "0.13"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [build-dependencies]
 anyhow = { workspace = true }

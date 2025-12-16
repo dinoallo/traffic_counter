@@ -13,8 +13,10 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering, fence},
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+use chrono::Utc;
 
 use anyhow::{Context, Result, anyhow};
 use tokio::{signal, task, time};
@@ -46,6 +48,7 @@ pub struct NodeOptions {
     pub workers: usize,
     pub fanout_group: Option<u16>,
     pub report_interval: Duration,
+    pub report_natural: bool,
     pub ring: RingConfig,
     pub ignore_list: Option<PathBuf>,
     pub accept_source_list: Option<PathBuf>,
@@ -261,15 +264,15 @@ pub async fn run_packet_pipeline(opts: NodeOptions) -> Result<()> {
     let reporter_table = counters.clone();
     let reporter_running = running.clone();
     let report_interval = opts.report_interval;
+    let report_natural = opts.report_natural;
     let reporter = tokio::spawn(async move {
-        let mut ticker = time::interval(report_interval);
-        loop {
-            ticker.tick().await;
-            if !reporter_running.load(Ordering::Relaxed) {
-                break;
-            }
-            log_snapshot(&reporter_table);
-        }
+        run_reporter(
+            reporter_table,
+            reporter_running,
+            report_interval,
+            report_natural,
+        )
+        .await;
     });
 
     signal::ctrl_c()
@@ -615,6 +618,74 @@ async fn wait_for_read(fd: RawFd) -> Result<()> {
     }
 }
 
+async fn run_reporter(
+    table: Arc<CounterTable>,
+    running: Arc<AtomicBool>,
+    interval: Duration,
+    natural: bool,
+) {
+    if natural {
+        run_natural_reporter(table, running, interval).await;
+    } else {
+        run_interval_reporter(table, running, interval).await;
+    }
+}
+
+async fn run_interval_reporter(
+    table: Arc<CounterTable>,
+    running: Arc<AtomicBool>,
+    interval: Duration,
+) {
+    let mut ticker = time::interval(interval);
+    loop {
+        ticker.tick().await;
+        if !running.load(Ordering::Relaxed) {
+            break;
+        }
+        log_snapshot(&table);
+    }
+}
+
+async fn run_natural_reporter(
+    table: Arc<CounterTable>,
+    running: Arc<AtomicBool>,
+    interval: Duration,
+) {
+    loop {
+        let wait = duration_until_next_boundary(interval);
+        time::sleep(wait).await;
+        if !running.load(Ordering::Relaxed) {
+            break;
+        }
+        log_snapshot(&table);
+    }
+}
+
+fn duration_until_next_boundary(interval: Duration) -> Duration {
+    if interval.is_zero() {
+        return Duration::from_secs(0);
+    }
+    let now = SystemTime::now();
+    let since_epoch = now
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0));
+    let interval_ns = interval.as_nanos();
+    if interval_ns == 0 {
+        return Duration::from_secs(0);
+    }
+    let since_ns = since_epoch.as_nanos();
+    let next_multiple = ((since_ns / interval_ns) + 1) * interval_ns;
+    let wait_ns = next_multiple - since_ns;
+    nanos_to_duration(wait_ns)
+}
+
+fn nanos_to_duration(ns: u128) -> Duration {
+    const NS_PER_SEC: u128 = 1_000_000_000;
+    let secs = (ns / NS_PER_SEC) as u64;
+    let nanos = (ns % NS_PER_SEC) as u32;
+    Duration::new(secs, nanos)
+}
+
 struct PacketAddrs {
     src: IpKey,
     dst: IpKey,
@@ -753,11 +824,31 @@ impl Default for CounterTable {
 }
 
 fn log_snapshot(table: &CounterTable) {
+    let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    /*
+    let total_bytes: u64 = table
+        .shards
+        .iter()
+        .map(|shard| {
+            let guard = shard.lock().expect("counter shard mutex poisoned");
+            guard.values().map(|c| c.bytes).sum::<u64>()
+        })
+        .sum();
+    let total_packets: u64 = table
+        .shards
+        .iter()
+        .map(|shard| {
+            let guard = shard.lock().expect("counter shard mutex poisoned");
+            guard.values().map(|c| c.packets).sum::<u64>()
+        })
+        .sum();
+    println!("[{timestamp}] Total bytes: {total_bytes} packets: {total_packets}");
+    */
     for shard_idx in 0..table.shards.len() {
         let snapshot = table.snapshot_shard(shard_idx);
         for (ip, counters) in &snapshot {
             println!(
-                "IP {:?} - bytes: {} packets: {}",
+                "[{timestamp}] IP {} - bytes: {} packets: {}",
                 ipkey2string(ip),
                 counters.bytes,
                 counters.packets

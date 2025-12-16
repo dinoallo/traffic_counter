@@ -34,6 +34,9 @@ struct NodeCommand {
     /// Seconds between stat snapshots printed to stdout
     #[arg(long, default_value_t = 5)]
     report_interval_secs: u64,
+    /// Align report emissions to natural time boundaries (minute, hour, etc.)
+    #[arg(long)]
+    report_natural: bool,
     /// Size of each tpacket block (bytes)
     #[arg(long, value_name = "BYTES", default_value_t = node::DEFAULT_BLOCK_SIZE)]
     block_size: u32,
@@ -72,6 +75,7 @@ async fn run() -> Result<()> {
                 workers: cmd.workers,
                 fanout_group: cmd.fanout_group,
                 report_interval: Duration::from_secs(cmd.report_interval_secs.max(1)),
+                report_natural: cmd.report_natural,
                 ring: node::RingConfig {
                     block_size: cmd.block_size,
                     block_count: cmd.block_count,
