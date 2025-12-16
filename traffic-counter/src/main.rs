@@ -46,9 +46,12 @@ struct NodeCommand {
     /// Milliseconds before an idle block is recycled
     #[arg(long, value_name = "MILLIS", default_value_t = node::DEFAULT_BLOCK_TIMEOUT_MS)]
     block_timeout_ms: u32,
-    /// File containing IPv4/IPv6 destination addresses to ignore (one per line)
+    /// File containing IPv4/IPv6 destination CIDRs to ignore (one per line)
     #[arg(long, value_name = "PATH")]
     ignore_file: Option<PathBuf>,
+    /// File containing IPv4/IPv6 source CIDRs to accept (one per line)
+    #[arg(long, value_name = "PATH")]
+    accept_source_file: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -76,6 +79,7 @@ async fn run() -> Result<()> {
                     block_timeout_ms: cmd.block_timeout_ms,
                 },
                 ignore_list: cmd.ignore_file,
+                accept_source_list: cmd.accept_source_file,
             };
             node::run_packet_pipeline(opts).await?;
         }
