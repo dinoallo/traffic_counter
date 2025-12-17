@@ -26,7 +26,7 @@ RUN mkdir -p traffic-counter/src traffic-counter-common/src traffic-counter-ebpf
 COPY . .
 RUN make build-release
 
-FROM gcr.io/distroless/cc-debian12 AS runtime
+FROM gcr.io/distroless/cc-debian12:debug AS runtime
 WORKDIR /etc/traffic-counter
 RUN mkdir -p /etc/traffic-counter
 
