@@ -55,7 +55,7 @@ check_component() {
 check_component "nightly" "rust-src"
 
 # Check for other required tools
-required=(bpftool bpf-linker)
+required=(bpf-linker)
 missing=()
 
 for cmd in "${required[@]}"; do
