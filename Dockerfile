@@ -9,6 +9,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN rustup toolchain install nightly --profile minimal --component rust-src
+RUN rustup toolchain install stable --profile minimal  
 RUN cargo install --locked bpf-linker
 
 COPY Cargo.toml Cargo.lock ./
