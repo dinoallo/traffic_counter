@@ -1,52 +1,61 @@
 # Traffic Counter
 
-Traffic Counter is a per-node network traffic counting agent that uses eBPF to record per-IP (and optionally per-flow) byte and packet counters. It includes both a C-based XDP program and a Rust (aya-bpf) implementation, plus a userspace loader built with `aya`.
+Traffic Counter is a per-node network traffic counting agent that combines a small eBPF socket filter with a userspace AF_PACKET pipeline to record per-IP (and optionally per-flow) byte and packet counters. The userspace portion is written in Rust, with shared types captured in `traffic-counter-common` and a dedicated filter crate in `traffic-counter-ebpf`.
 
 **This project targets Linux hosts and requires kernel eBPF support and elevated privileges to load programs.**
 
+> **Active development:** This project changes quickly and may introduce breaking updates between releases. Check `openspec/` for the latest specs and roadmap details before building on top of current interfaces.
+
+## Status: packet-socket ingestion
+
+The `refactor-packet-socket-filter` change now captures traffic exclusively through an `AF_PACKET` pipeline. Each node process:
+
+- Joins interface RX queues via `PACKET_FANOUT` and TPACKET_V3 rings.
+- Loads the socket filter from `traffic-counter-ebpf` to drop non-IP frames before userspace work.
+- Counts per-IP (and optional per-flow) stats inside sharded hash maps and publishes deltas at a fixed cadence.
+
+Review the detailed design in `openspec/changes/refactor-packet-socket-filter/` before extending the agent.
+
 ## Quick Start
 
-1. Build the userspace binary (this also embeds the latest `traffic-counter-ebpf` artifact):
+1. Build the userspace binary (this also embeds the latest socket-filter artifact):
 
 ```bash
 cargo build --release
 ```
 
-1. Attach the counter to an interface. Pick the attach point (`xdp`, `tc-ingress`, or `tc-egress`), select an XDP mode when needed, and override map sizes if the defaults are too small:
+1. Launch the packet-socket ingestion pipeline. Pick an interface, fanout group, worker count, and ring sizing that match the NIC you are sampling:
 
 ```bash
-sudo target/release/traffic-counter attach \
+sudo target/release/traffic-counter node \
     --iface eth0 \
-    --attach-point xdp \
-    --xdp-mode driver \
-    --ip-map-size 131072 \
-    --enable-flow-map \
-    --flow-map-size 65536
+    --workers 4 \
+    --fanout-group 101 \
+    --block-size 262144 \
+    --block-count 1024 \
+    --frame-size 4096 \
+    --report-interval-secs 5
 ```
 
-1. Inspect counters from the pinned maps whenever you need to export or debug totals:
+   Provide `--ignore-file path/to/cidrs.txt` or `--accept-source-file path/to/cidrs.txt` to tune what the filter forwards. The CLI prints byte, packet, drop, and hashmap growth deltas each reporting interval.
+
+1. Monitor the streamed stats or pipe them into an exporter. Watch for ring overruns or large drop deltas—they indicate that you need more workers, a different fanout group, or a larger ring.
+
+### Permissions
+
+The loader needs `CAP_NET_RAW` to open packet sockets and `CAP_BPF` (or `CAP_SYS_ADMIN` on older kernels) to attach the eBPF filter. Grant the binary capabilities if you prefer not to run it as root:
 
 ```bash
-sudo target/release/traffic-counter dump-maps --pin /sys/fs/bpf/traffic_counter/traffic_counters_ip
+sudo setcap cap_net_raw,cap_bpf+ep target/release/traffic-counter
 ```
-
-### Map Pin Layout
-
-All long-lived maps are pinned under `/sys/fs/bpf/traffic_counter/` by default:
-
-- `traffic_counters_ip`: per-CPU hash map keyed by `IpKey` (source IP) that stores `Counters { bytes, packets }`.
-- `traffic_counters_flow`: LRU hash map keyed by a 5-tuple style `FlowKey`. It is idle until `--enable-flow-map` is passed.
-- `traffic_control`: array map storing runtime flags (`enable_flow_counters`), configured capacities, and drop counters.
-
-You can override any pin path via `--pin`, `--flow-pin`, or `--control-pin` when calling `attach`.
 
 ## Project Structure
 
 For first-time contributors, here's a short description of the repository layout and where to look.
 
-- `traffic-counter/`: Primary userspace binary crate — runtime, CLI, and the userspace loader that interacts with eBPF artifacts (contains `Cargo.toml`, `src/main.rs`).
+- `traffic-counter/`: Primary userspace binary crate — runtime, CLI, and the AF_PACKET ingestion pipeline with fanout, ring management, and sharded counters (contains `Cargo.toml`, `src/main.rs`).
 - `traffic-counter-common/`: Shared library crate with types and helpers used across the project.
-- `traffic-counter-ebpf/`: eBPF programs and build logic (Rust `aya-bpf` or C helper code). This is the kernel-side code and has its own `build.rs` for producing BPF objects.
+- `traffic-counter-ebpf/`: Socket-filter eBPF program and build logic (Rust `aya-bpf`) used with `SO_ATTACH_BPF`. Compiles to the artifacts embedded by the userspace binary.
 - `openspec/`: Design docs, proposals, and project-level specs (including `project.md` and change proposals under `changes/`).
 - `scripts/`: Small helper scripts for common developer tasks (`build-ebpf.sh`, `check-deps.sh`).
 - Top-level files: `Makefile`, root `Cargo.toml`, and this `README.md` provide build targets, dependency management, and getting-started instructions.
@@ -87,7 +96,7 @@ cargo test
 Notes:
 
 - eBPF development typically requires extra native dependencies and privileged test environments. See the Quick Start and the `scripts/` helpers for developer setup details.
-- If you plan to modify map layouts or public interfaces, open a proposal under `openspec/changes/` describing the change.
+- If you plan to modify the ingestion pipeline, exposed counters, or control-plane surface area, open a proposal under `openspec/changes/` describing the change.
 
 Prerequisites (developer machine / CI):
 
@@ -157,9 +166,9 @@ Notes:
 
 ## Development notes
 
-- eBPF programs must be small and verifier-friendly. Use the Rust `aya-bpf` APIs for stricter type-safety, or maintain the C sources in `traffic-counter-ebpf/` if you need very low-level control.
-- Map pinning: BPF maps can be pinned under `/sys/fs/bpf/traffic_counter/` to persist across loader restarts. Userspace will open and aggregate pinned maps when present.
-- Aggregation: userspace should sum per-CPU counters to produce global totals before exporting.
+- The socket filter must remain short and verifier-friendly; use the Rust `aya-bpf` APIs in `traffic-counter-ebpf/` to describe matches and keep only L3 IP frames.
+- Userspace counting happens in sharded hash maps. Tune shard count and worker affinity before optimizing the filter—it is usually the CPU bottleneck.
+- Ring sizing matters: set `--block-size`, `--block-count`, and `--frame-size` large enough for the NIC speed to avoid overruns. Stats printed by the CLI call out when the kernel drops frames.
 
 ## Testing & CI
 
@@ -168,11 +177,11 @@ Notes:
 
 ## Troubleshooting
 
-- If attaching the eBPF programs fails, double-check that `/sys/fs/bpf` is mounted and writable, then verify that `traffic_counters_ip`, `traffic_counters_flow`, and `traffic_control` exist (or can be created) under `/sys/fs/bpf/traffic_counter/`.
-- Oversized deployments may exhaust the default 65,536-entry IP map or the 32,768-entry flow map. Rerun `traffic-counter attach` with `--ip-map-size` and/or `--flow-map-size` bumped to the desired capacity.
-- Flow tracking remains idle until you pass `--enable-flow-map`; the control map reflects the current setting and exposes a `dropped_packets` counter you can inspect with `bpftool map dump`.
-- If attaching the ebpf programs fails, verify you have root or the necessary capabilities and that the interface exists.
-- Use `sudo bpftool prog show` and `bpftool map show` to inspect loaded programs and maps.
+- Startup errors that mention `EPERM` typically mean the binary lacks `CAP_NET_RAW` or `CAP_BPF`. Either run as root or `setcap cap_net_raw,cap_bpf+ep target/release/traffic-counter`.
+- `fanout join failed` indicates that another process already uses your requested `--fanout-group`. Pick a different unsigned 16-bit value or shut down the conflicting process.
+- Large drop deltas usually mean the ring is undersized for the traffic profile. Increase `--block-count`, `--block-size`, or `--workers`, and monitor the next report interval.
+- If you never see counters for a particular interface, confirm that the NIC exposes an RX queue to packet sockets (`ethtool -S` or `ip link set <iface> up`). Some virtual interfaces block `AF_PACKET` by default.
+- Use `sudo bpftool prog show | grep traffic_counter` to verify that the socket filter loaded successfully.
 
 ## Contributing
 
