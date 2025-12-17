@@ -28,7 +28,6 @@ RUN make build-release
 
 FROM gcr.io/distroless/cc-debian12:debug AS runtime
 WORKDIR /etc/traffic-counter
-RUN mkdir -p /etc/traffic-counter
 
 COPY --from=builder /workspace/target/release/traffic-counter /usr/local/bin/traffic-counter
 
