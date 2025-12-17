@@ -164,6 +164,14 @@ docker run --rm --net=host --cap-add=NET_RAW --cap-add=BPF \
 
 The runtime still needs `CAP_NET_RAW` and `CAP_BPF` (or `CAP_SYS_ADMIN` on older kernels) because packet sockets and eBPF filters require those capabilities even inside containers.
 
+## Kubernetes deployment
+
+Example manifests live under `deploy/k8s/`. They provision a namespace, a service account, a tunable ConfigMap, and a per-node `DaemonSet` that runs the collector with host networking and the required Linux capabilities. Deploy them with `kubectl` or `kustomize`:
+
+```bash
+kubectl apply -k deploy/k8s
+```
+
 ## Development notes
 
 - The socket filter must remain short and verifier-friendly; use the Rust `aya-bpf` APIs in `traffic-counter-ebpf/` to describe matches and keep only L3 IP frames.

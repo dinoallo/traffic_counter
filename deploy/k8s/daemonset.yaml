@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: traffic-counter
+  namespace: traffic-counter
+  labels:
+    app.kubernetes.io/name: traffic-counter
+    app.kubernetes.io/part-of: traffic-counter
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traffic-counter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: traffic-counter
+        app.kubernetes.io/part-of: traffic-counter
+    spec:
+      serviceAccountName: traffic-counter
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: traffic-counter
+          image: ghcr.io/dinoallo/traffic-counter:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - traffic-counter
+          args:
+            - node
+            - --iface=eth0
+            - --workers=1
+            - --ignore-file=/etc/traffic-counter/ignore.txt
+            - --accept-source-file=/etc/traffic-counter/accept.txt
+            - --report-interval-secs=60
+            - --report-natural
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add:
+                - NET_RAW
+                - SYS_ADMIN
+            privileged: false
+          resources:
+            limits:
+              cpu: "1"
+              memory: 100Mi
+            requests:
+              cpu: 25m
+              memory: 10Mi
+          volumeMounts:
+            - name: traffic-counter-files
+              mountPath: /etc/traffic-counter
+              readOnly: true
+      terminationGracePeriodSeconds: 10
+      volumes:
+        - name: traffic-counter-files
+          configMap:
+            name: traffic-counter-files

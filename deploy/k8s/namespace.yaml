@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: traffic-counter
+  labels:
+    app.kubernetes.io/name: traffic-counter
+    app.kubernetes.io/part-of: traffic-counter

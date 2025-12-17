@@ -27,7 +27,8 @@ COPY . .
 RUN make build-release
 
 FROM gcr.io/distroless/cc-debian12 AS runtime
-WORKDIR /app
+WORKDIR /etc/traffic-counter
+RUN mkdir -p /etc/traffic-counter
 
 COPY --from=builder /workspace/target/release/traffic-counter /usr/local/bin/traffic-counter
 
