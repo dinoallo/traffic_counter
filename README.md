@@ -147,22 +147,22 @@ make build
 cargo build --release
 ```
 
-- Build C eBPF objects (if you use the C version in `ebpf/`):
-
-```bash
-make build-ebpf
-```
-
-- Build Rust eBPF crate (`ebpf/rust`) with `aya-bpf` and copy artifact into `target/bpf/`:
-
-```bash
-make build-ebpf-rust
-```
-
 Notes:
 
 - The Rust eBPF crate builds for the `bpfel-unknown-none` target; ensure that target is installed.
 - Build artifacts are placed in `target/bpf/` by the Makefile so the userspace loader can find them.
+
+## Container image
+
+Build a containerized version of the collector with the provided multi-stage `Dockerfile`:
+
+```bash
+docker build -t traffic-counter:latest .
+docker run --rm --net=host --cap-add=NET_RAW --cap-add=BPF \
+    traffic-counter:latest node --iface eth0 --workers 4
+```
+
+The runtime still needs `CAP_NET_RAW` and `CAP_BPF` (or `CAP_SYS_ADMIN` on older kernels) because packet sockets and eBPF filters require those capabilities even inside containers.
 
 ## Development notes
 
