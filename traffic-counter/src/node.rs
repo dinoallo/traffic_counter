@@ -1,34 +1,32 @@
 use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
     ffi::CString,
-    fs::File,
-    hash::{Hash, Hasher},
-    io::{self, BufRead, BufReader},
-    mem,
-    net::{IpAddr, Ipv6Addr},
+    io, mem,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
-    path::{Path, PathBuf},
+    path::PathBuf,
     ptr, slice,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering, fence},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use chrono::Utc;
-
 use anyhow::{Context, Result, anyhow};
 use tokio::{signal, task, time};
 
-use traffic_counter_common::{Counters, IpKey};
+use traffic_counter_common::IpKey;
+
+use crate::{
+    model::AddressList,
+    store::{CounterTable, log_snapshot},
+};
 
 const ETH_P_IPV4: u16 = 0x0800;
 const ETH_P_IPV6: u16 = 0x86DD;
 const ETH_HEADER_LEN: usize = 14;
 const IPV4_MIN_HEADER: usize = 20;
 const IPV6_HEADER_LEN: usize = 40;
-const COUNTER_SHARDS: usize = 64;
 
 pub const DEFAULT_BLOCK_SIZE: u32 = 1 << 20; // 1 MiB
 pub const DEFAULT_BLOCK_COUNT: u32 = 64;
@@ -52,150 +50,6 @@ pub struct NodeOptions {
     pub ring: RingConfig,
     pub ignore_list: Option<PathBuf>,
     pub accept_source_list: Option<PathBuf>,
-}
-
-struct AddressList {
-    ipv4: Vec<Ipv4Net>,
-    ipv6: Vec<Ipv6Net>,
-}
-
-struct Ipv4Net {
-    network: u32,
-    mask: u32,
-}
-
-struct Ipv6Net {
-    network: u128,
-    mask: u128,
-}
-
-impl AddressList {
-    fn empty() -> Self {
-        Self {
-            ipv4: Vec::new(),
-            ipv6: Vec::new(),
-        }
-    }
-
-    fn from_option(path: Option<&Path>, label: &str) -> Result<Self> {
-        match path {
-            Some(path) => Self::from_path(path, label),
-            None => Ok(Self::empty()),
-        }
-    }
-
-    fn from_path(path: &Path, label: &str) -> Result<Self> {
-        let file = File::open(path)
-            .with_context(|| format!("failed to open {label} at {}", path.display()))?;
-        let reader = BufReader::new(file);
-        let mut ipv4 = Vec::new();
-        let mut ipv6 = Vec::new();
-
-        for (line_no, line) in reader.lines().enumerate() {
-            let line = line.with_context(|| {
-                format!(
-                    "failed to read line {} of {} ({label})",
-                    line_no + 1,
-                    path.display()
-                )
-            })?;
-            let trimmed = line.split('#').next().unwrap_or("").trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let (addr_part, prefix_part) = trimmed.split_once('/').ok_or_else(|| {
-                anyhow!(
-                    "line {} of {} ({label}) must be CIDR notation (addr/prefix)",
-                    line_no + 1,
-                    path.display()
-                )
-            })?;
-            let addr: IpAddr = addr_part.trim().parse().with_context(|| {
-                format!(
-                    "invalid IP address '{}' on line {} of {} ({label})",
-                    addr_part.trim(),
-                    line_no + 1,
-                    path.display()
-                )
-            })?;
-            let prefix: u8 = prefix_part.trim().parse().with_context(|| {
-                format!(
-                    "invalid prefix '{}' on line {} of {} ({label})",
-                    prefix_part.trim(),
-                    line_no + 1,
-                    path.display()
-                )
-            })?;
-            match addr {
-                IpAddr::V4(addr) => {
-                    if prefix > 32 {
-                        return Err(anyhow!(
-                            "prefix {} exceeds IPv4 width on line {} of {} ({label})",
-                            prefix,
-                            line_no + 1,
-                            path.display()
-                        ));
-                    }
-                    let mask = ipv4_mask(prefix);
-                    let network = u32::from_be_bytes(addr.octets()) & mask;
-                    ipv4.push(Ipv4Net { network, mask });
-                }
-                IpAddr::V6(addr) => {
-                    if prefix > 128 {
-                        return Err(anyhow!(
-                            "prefix {} exceeds IPv6 width on line {} of {} ({label})",
-                            prefix,
-                            line_no + 1,
-                            path.display()
-                        ));
-                    }
-                    let mask = ipv6_mask(prefix);
-                    let network = ipv6_to_u128(addr) & mask;
-                    ipv6.push(Ipv6Net { network, mask });
-                }
-            }
-        }
-
-        Ok(Self { ipv4, ipv6 })
-    }
-
-    fn contains(&self, key: &IpKey) -> bool {
-        match key.family {
-            f if f == libc::AF_INET as u8 => {
-                let addr = key.addr_lo as u32;
-                self.ipv4.iter().any(|net| (addr & net.mask) == net.network)
-            }
-            f if f == libc::AF_INET6 as u8 => {
-                let addr = ((key.addr_hi as u128) << 64) | (key.addr_lo as u128);
-                self.ipv6.iter().any(|net| (addr & net.mask) == net.network)
-            }
-            _ => false,
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.ipv4.is_empty() && self.ipv6.is_empty()
-    }
-}
-
-fn ipv6_to_u128(addr: Ipv6Addr) -> u128 {
-    u128::from_be_bytes(addr.octets())
-}
-
-fn ipv4_mask(prefix: u8) -> u32 {
-    if prefix == 0 {
-        0
-    } else {
-        u32::MAX << (32 - prefix as u32)
-    }
-}
-
-fn ipv6_mask(prefix: u8) -> u128 {
-    if prefix == 0 {
-        0
-    } else {
-        u128::MAX << (128 - prefix as u32)
-    }
 }
 
 fn validate_ring_config(cfg: &RingConfig) -> Result<()> {
@@ -570,11 +424,19 @@ impl PacketRing {
                     break;
                 }
                 let data = slice::from_raw_parts(block_ptr.add(data_offset), snaplen);
-                if let Some(addrs) = parse_frame(data) {
-                    let dst_allowed = ignore_is_empty || !ignore_list.contains(&addrs.dst);
-                    let src_allowed = accept_is_empty || accept_list.contains(&addrs.src);
+                if let Some(flow) = extract_flow(data) {
+                    let bytes = packet_len as u64;
+                    let packets = 1;
+                    //TODO: check if this packet is being received by us or being transmitted by us
+                    // We can do this check by looking at the packet's src and dst.
+                    // If it's a packet being received by us, the dst IP should match one of our local IPs.
+                    // Otherwise, it's a transmitted packet.
+                    // Then, we decide if we should increment rx or tx counters accordingly, and should take
+                    // ignore/accept lists into account properly.
+                    let dst_allowed = ignore_is_empty || !ignore_list.contains(&flow.remote_ip);
+                    let src_allowed = accept_is_empty || accept_list.contains(&flow.local_ip);
                     if dst_allowed && src_allowed {
-                        counters.increment(addrs.src, packet_len as u64);
+                        counters.increment_tx(flow, bytes, packets);
                     }
                 }
                 if next == 0 {
@@ -686,197 +548,120 @@ fn nanos_to_duration(ns: u128) -> Duration {
     Duration::new(secs, nanos)
 }
 
-struct PacketAddrs {
-    src: IpKey,
-    dst: IpKey,
-}
-
-fn parse_frame(frame: &[u8]) -> Option<PacketAddrs> {
+fn extract_flow(frame: &[u8]) -> Option<crate::model::Flow> {
     if frame.len() < ETH_HEADER_LEN {
         return None;
     }
-    let ether_type = u16::from_be_bytes([frame[12], frame[13]]);
-    match ether_type {
-        ETH_P_IPV4 => parse_ipv4(&frame[ETH_HEADER_LEN..]),
-        ETH_P_IPV6 => parse_ipv6(&frame[ETH_HEADER_LEN..]),
+
+    let mut ethertype = u16::from_be_bytes([frame[12], frame[13]]);
+    let mut offset = ETH_HEADER_LEN;
+    const VLAN_TAGS: [u16; 3] = [0x8100, 0x88A8, 0x9100];
+
+    while VLAN_TAGS.contains(&ethertype) {
+        if frame.len() < offset + 4 {
+            return None;
+        }
+        // VLAN header is 4 bytes: TCI + encapsulated ethertype.
+        ethertype = u16::from_be_bytes([frame[offset + 2], frame[offset + 3]]);
+        offset += 4;
+    }
+
+    let segment = frame.get(offset..)?;
+    match ethertype {
+        ETH_P_IPV4 | ETH_P_IPV6 => parse_segment(segment),
         _ => None,
     }
 }
 
-fn parse_ipv4(payload: &[u8]) -> Option<PacketAddrs> {
-    if payload.len() < IPV4_MIN_HEADER {
+fn parse_segment(segment: &[u8]) -> Option<crate::model::Flow> {
+    if segment.is_empty() {
         return None;
     }
-    let version_ihl = payload[0];
-    if version_ihl >> 4 != 4 {
+    let version = segment[0] >> 4;
+    match version {
+        4 => parse_ipv4_flow(segment),
+        6 => parse_ipv6_flow(segment),
+        _ => None,
+    }
+}
+
+fn parse_ipv4_flow(segment: &[u8]) -> Option<crate::model::Flow> {
+    if segment.len() < IPV4_MIN_HEADER {
         return None;
     }
-    let ihl_bytes = ((version_ihl & 0x0f) as usize) * 4;
-    if payload.len() < ihl_bytes || ihl_bytes < IPV4_MIN_HEADER {
+    let ihl = ((segment[0] & 0x0f) as usize) * 4;
+    if ihl < IPV4_MIN_HEADER || segment.len() < ihl {
         return None;
     }
-    let src = u32::from_be_bytes(payload[12..16].try_into().ok()?);
-    let dst = u32::from_be_bytes(payload[16..20].try_into().ok()?);
-    Some(PacketAddrs {
-        src: IpKey {
-            family: libc::AF_INET as u8,
-            pad: [0; 7],
-            addr_lo: src as u64,
-            addr_hi: 0,
-        },
-        dst: IpKey {
-            family: libc::AF_INET as u8,
-            pad: [0; 7],
-            addr_lo: dst as u64,
-            addr_hi: 0,
-        },
+    let proto = segment[9];
+    let src_ip = IpAddr::V4(Ipv4Addr::new(
+        segment[12],
+        segment[13],
+        segment[14],
+        segment[15],
+    ));
+    let dst_ip = IpAddr::V4(Ipv4Addr::new(
+        segment[16],
+        segment[17],
+        segment[18],
+        segment[19],
+    ));
+    let (src_port, dst_port) = parse_ports(proto, &segment[ihl..]);
+    Some(crate::model::Flow {
+        local_ip: src_ip,
+        remote_ip: dst_ip,
+        local_port: src_port,
+        remote_port: dst_port,
+        protocol: proto,
     })
 }
 
-fn parse_ipv6(payload: &[u8]) -> Option<PacketAddrs> {
-    if payload.len() < IPV6_HEADER_LEN {
+fn parse_ipv6_flow(segment: &[u8]) -> Option<crate::model::Flow> {
+    if segment.len() < IPV6_HEADER_LEN {
         return None;
     }
-    let src_hi = u64::from_be_bytes(payload[8..16].try_into().ok()?);
-    let src_lo = u64::from_be_bytes(payload[16..24].try_into().ok()?);
-    let dst_hi = u64::from_be_bytes(payload[24..32].try_into().ok()?);
-    let dst_lo = u64::from_be_bytes(payload[32..40].try_into().ok()?);
-    Some(PacketAddrs {
-        src: IpKey {
-            family: libc::AF_INET6 as u8,
-            pad: [0; 7],
-            addr_lo: src_lo,
-            addr_hi: src_hi,
-        },
-        dst: IpKey {
-            family: libc::AF_INET6 as u8,
-            pad: [0; 7],
-            addr_lo: dst_lo,
-            addr_hi: dst_hi,
-        },
+    let proto = segment[6];
+    let src_ip = IpAddr::V6(Ipv6Addr::new(
+        u16::from_be_bytes([segment[8], segment[9]]),
+        u16::from_be_bytes([segment[10], segment[11]]),
+        u16::from_be_bytes([segment[12], segment[13]]),
+        u16::from_be_bytes([segment[14], segment[15]]),
+        u16::from_be_bytes([segment[16], segment[17]]),
+        u16::from_be_bytes([segment[18], segment[19]]),
+        u16::from_be_bytes([segment[20], segment[21]]),
+        u16::from_be_bytes([segment[22], segment[23]]),
+    ));
+    let dst_ip = IpAddr::V6(Ipv6Addr::new(
+        u16::from_be_bytes([segment[24], segment[25]]),
+        u16::from_be_bytes([segment[26], segment[27]]),
+        u16::from_be_bytes([segment[28], segment[29]]),
+        u16::from_be_bytes([segment[30], segment[31]]),
+        u16::from_be_bytes([segment[32], segment[33]]),
+        u16::from_be_bytes([segment[34], segment[35]]),
+        u16::from_be_bytes([segment[36], segment[37]]),
+        u16::from_be_bytes([segment[38], segment[39]]),
+    ));
+    let payload = &segment[IPV6_HEADER_LEN..];
+    let (src_port, dst_port) = parse_ports(proto, payload);
+    Some(crate::model::Flow {
+        local_ip: src_ip,
+        remote_ip: dst_ip,
+        local_port: src_port,
+        remote_port: dst_port,
+        protocol: proto,
     })
 }
 
-struct CounterTable {
-    shards: Vec<Mutex<HashMap<IpKey, Counters>>>,
-}
-
-impl CounterTable {
-    fn new() -> Self {
-        let mut shards = Vec::with_capacity(COUNTER_SHARDS);
-        for _ in 0..COUNTER_SHARDS {
-            shards.push(Mutex::new(HashMap::new()));
+fn parse_ports(proto: u8, payload: &[u8]) -> (u16, u16) {
+    if payload.len() < 4 {
+        return (0, 0);
+    }
+    match proto {
+        6 | 17 => {
+            let src = u16::from_be_bytes([payload[0], payload[1]]);
+            let dst = u16::from_be_bytes([payload[2], payload[3]]);
+            (src, dst)
         }
-        Self { shards }
-    }
-
-    fn shard_index(&self, key: &IpKey) -> usize {
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        (hasher.finish() as usize) % self.shards.len().max(1)
-    }
-
-    fn increment(&self, key: IpKey, bytes: u64) {
-        let idx = self.shard_index(&key);
-        let mut guard = self.shards[idx]
-            .lock()
-            .expect("counter shard mutex poisoned");
-        let entry = guard.entry(key).or_insert(Counters {
-            bytes: 0,
-            packets: 0,
-        });
-        entry.bytes = entry.bytes.wrapping_add(bytes);
-        entry.packets = entry.packets.wrapping_add(1);
-    }
-
-    /*
-    fn snapshot(&self) -> HashMap<IpKey, Counters> {
-        let mut merged = HashMap::new();
-        for shard in &self.shards {
-            let guard = shard.lock().expect("counter shard mutex poisoned");
-            for (key, counters) in guard.iter() {
-                merged.insert(*key, *counters);
-            }
-        }
-        merged
-    }
-    */
-
-    fn snapshot_shard(&self, shard_idx: usize) -> HashMap<IpKey, Counters> {
-        let mut snapshot = HashMap::new();
-        if shard_idx < self.shards.len() {
-            let mut guard = self.shards[shard_idx]
-                .lock()
-                .expect("counter shard mutex poisoned");
-            for (key, counters) in guard.iter() {
-                snapshot.insert(*key, *counters);
-            }
-            guard.clear();
-        }
-        snapshot
-    }
-}
-
-impl Default for CounterTable {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-fn log_snapshot(table: &CounterTable) {
-    let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    /*
-    let total_bytes: u64 = table
-        .shards
-        .iter()
-        .map(|shard| {
-            let guard = shard.lock().expect("counter shard mutex poisoned");
-            guard.values().map(|c| c.bytes).sum::<u64>()
-        })
-        .sum();
-    let total_packets: u64 = table
-        .shards
-        .iter()
-        .map(|shard| {
-            let guard = shard.lock().expect("counter shard mutex poisoned");
-            guard.values().map(|c| c.packets).sum::<u64>()
-        })
-        .sum();
-    println!("[{timestamp}] Total bytes: {total_bytes} packets: {total_packets}");
-    */
-    for shard_idx in 0..table.shards.len() {
-        let snapshot = table.snapshot_shard(shard_idx);
-        for (ip, counters) in &snapshot {
-            println!(
-                "[{timestamp}] IP {} - bytes: {} packets: {}",
-                ipkey2string(ip),
-                counters.bytes,
-                counters.packets
-            );
-        }
-    }
-}
-
-fn ipkey2string(key: &IpKey) -> String {
-    match key.family as i32 {
-        libc::AF_INET => {
-            let raw = (key.addr_lo & 0xFFFFFFFF) as u32;
-            let octets = raw.to_be_bytes();
-            format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3])
-        }
-        libc::AF_INET6 => {
-            let hi_bytes = key.addr_hi.to_be_bytes();
-            let lo_bytes = key.addr_lo.to_be_bytes();
-            let segments: Vec<String> = hi_bytes
-                .chunks(2)
-                .chain(lo_bytes.chunks(2))
-                .map(|chunk| {
-                    let seg = u16::from_be_bytes([chunk[0], chunk[1]]);
-                    format!("{:x}", seg)
-                })
-                .collect();
-            segments.join(":")
-        }
-        _ => "unknown".to_string(),
+        _ => (0, 0),
     }
 }

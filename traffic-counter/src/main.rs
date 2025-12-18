@@ -3,7 +3,9 @@ use std::{path::PathBuf, process::exit, time::Duration};
 use anyhow::Result;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 
+mod model;
 mod node;
+mod store;
 
 const VERSION: &str = env!("TRAFFIC_COUNTER_VERSION");
 const GIT_DESCRIBE: &str = match option_env!("TRAFFIC_COUNTER_GIT_DESC") {
