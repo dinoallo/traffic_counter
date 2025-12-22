@@ -14,4 +14,5 @@ multimap = "0"
 http = "1"
 lazy_static = "1"
 downcast-rs="1"
-redis={version = "0", default-features = false}
+# Use redis-rs version 1 to successfully build binary for wasm32-wasip1
+redis={version = "1", default-features = false}
