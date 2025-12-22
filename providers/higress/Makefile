@@ -1,7 +1,7 @@
 PLUGIN_NAME ?= traffic-counter
 BUILDER_REGISTRY ?= ghcr.io/dinoallo/traffic-counter/plugins/higress/
 REGISTRY ?= ghcr.io/dinoallo/traffic-counter/plugins/higress/
-RUST_VERSION ?= 1.98
+RUST_VERSION ?= 1.91
 ORAS_VERSION ?= 1.0.0
 BUILDER ?= ${BUILDER_REGISTRY}wasm-rust-builder:rust${RUST_VERSION}-oras${ORAS_VERSION}
 BUILD_TIME := $(shell date "+%Y%m%d-%H%M%S")

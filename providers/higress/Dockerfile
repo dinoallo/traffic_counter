@@ -1,4 +1,4 @@
-FROM rust:1.98 AS builder
+FROM rust:1.91-slim AS builder
 WORKDIR /workspace
 RUN rustup target add wasm32-wasip1
 ARG PLUGIN_NAME="traffic-counter"

@@ -1,4 +1,4 @@
-name: build-higress
+name: publish-higress-image
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
       PLUGIN_NAME: traffic-counter
       IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/traffic-counter/plugins/higress/traffic-counter
       BUILDER_IMAGE: ghcr.io/${{ github.repository_owner }}/traffic-counter/plugins/higress/wasm-rust-builder
-      RUST_VERSION: 1.98
+      RUST_VERSION: 1.91
       ORAS_VERSION: 1.0.0
     steps:
       - name: Checkout

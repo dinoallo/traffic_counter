@@ -1,5 +1,4 @@
-name: CI for higress plugins
-
+name: ci-for-higress
 on:
   push:
     branches: [ main, master ]
