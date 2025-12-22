@@ -6,8 +6,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use traffic_counter_common::IpKey;
-
 pub struct AddressList {
     ipv4: Vec<Ipv4Net>,
     ipv6: Vec<Ipv6Net>,

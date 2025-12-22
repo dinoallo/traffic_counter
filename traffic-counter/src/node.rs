@@ -15,8 +15,6 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use tokio::{signal, task, time};
 
-use traffic_counter_common::IpKey;
-
 use crate::{
     model::AddressList,
     store::{CounterTable, log_snapshot},

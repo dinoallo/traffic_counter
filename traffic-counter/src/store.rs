@@ -29,6 +29,7 @@ impl CounterTable {
         (hasher.finish() as usize) % self.shards.len().max(1)
     }
 
+    #[allow(dead_code)]
     pub fn increment_rx(&self, key: Flow, bytes: u64, packets: u64) {
         let idx = self.shard_index(&key);
         let mut guard = self.shards[idx]
