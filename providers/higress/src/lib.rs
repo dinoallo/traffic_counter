@@ -32,36 +32,49 @@ impl Default for HTTPTrafficCounter {
     }
 }
 
+impl HTTPTrafficCounter {
+    fn log_final_size(&self) {
+        self.log.infof(format_args!(
+            "Final total response headers size: {}",
+            self.total_response_header_size
+        ));
+        self.log.infof(format_args!(
+            "Final total response body size: {}",
+            self.total_response_body_size
+        ));
+    }
+}
+
 impl Context for HTTPTrafficCounter {}
-impl HttpContext for HTTPTrafficCounter {}
+impl HttpContext for HTTPTrafficCounter {
+    fn on_http_response_headers(
+        &mut self,
+        _num_headers: usize,
+        _end_of_stream: bool,
+    ) -> HeaderAction {
+        let headers = self.get_http_response_headers();
+        let mut size = 0;
+        for (name, value) in headers {
+            // Adding name, value, and the ": " + CRLF (approx 4 bytes per line)
+            size += name.len() + value.len() + 4;
+        }
+        self.total_response_header_size += size;
+        if _end_of_stream {
+            self.log_final_size();
+        }
+        HeaderAction::Continue
+    }
+    fn on_http_response_body(&mut self, _body_size: usize, _end_of_stream: bool) -> DataAction {
+        self.total_response_body_size += _body_size;
+        if _end_of_stream {
+            self.log_final_size();
+        }
+        DataAction::Continue
+    }
+}
 impl HttpContextWrapper<HTTPTrafficCounterConfig> for HTTPTrafficCounter {
     fn on_config(&mut self, _config: Rc<HTTPTrafficCounterConfig>) {
         self.config = Some(_config.clone());
-    }
-    fn on_http_response_complete_headers(
-        &mut self,
-        _headers: &MultiMap<String, String>,
-    ) -> HeaderAction {
-        let mut size = 0;
-        for (name, value) in _headers {
-            size += name.len() + value.len() + 4; // account for ": " and "\r\n"
-        }
-        self.total_response_header_size += size;
-        self.log.debugf(format_args!(
-            "total response headers size: {}",
-            self.total_response_header_size
-        ));
-        //TODO: send total response header size to the counter service / redis
-        HeaderAction::Continue
-    }
-    fn on_http_response_complete_body(&mut self, _res_body: &Bytes) -> DataAction {
-        self.total_response_body_size += _res_body.len();
-        self.log.debugf(format_args!(
-            "total response body size: {}",
-            self.total_response_body_size
-        ));
-        //TODO: send total response body size to the counter service / redis
-        DataAction::Continue
     }
 }
 
