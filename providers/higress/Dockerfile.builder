@@ -4,7 +4,7 @@ ARG ORAS_VERSION=1.0.0
 
 LABEL rust_version=$RUST_VERSION oras_version=$ORAS_VERSION
 
-RUN rustup target add wasm32-wasi wasm32-wasip1
+RUN rustup target add wasm32-wasip1
 
 RUN arch="$(dpkg --print-architecture)"; arch="${arch##*-}"; \
     rust_version=${RUST_VERSION:-1.82}; \
