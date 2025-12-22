@@ -10,12 +10,18 @@ use std::rc::Rc;
 
 const PLUGIN_NAME: &str = "traffic-counter";
 
+fn debug_default() -> bool {
+    false
+}
 #[derive(Default, Debug, Deserialize, Clone)]
 #[serde(default)]
-pub struct HTTPTrafficCounterConfig {}
+pub struct HTTPTrafficCounterConfig {
+    #[serde(default = "debug_default")]
+    pub debug: bool,
+}
 pub struct HTTPTrafficCounter {
     log: Log,
-    config: Option<Rc<HTTPTrafficCounterConfig>>,
+    config: Rc<HTTPTrafficCounterConfig>,
     total_response_header_size: usize,
     total_response_body_size: usize,
 }
@@ -24,7 +30,7 @@ impl Default for HTTPTrafficCounter {
     fn default() -> Self {
         Self {
             log: Log::new(PLUGIN_NAME.to_string()),
-            config: None,
+            config: Rc::new(HTTPTrafficCounterConfig::default()),
             total_response_header_size: 0,
             total_response_body_size: 0,
         }
@@ -58,14 +64,14 @@ impl HttpContext for HTTPTrafficCounter {
             size += name.len() + value.len() + 4;
         }
         self.total_response_header_size += size;
-        if _end_of_stream {
+        if _end_of_stream && self.config.debug {
             self.log_final_size();
         }
         HeaderAction::Continue
     }
     fn on_http_response_body(&mut self, _body_size: usize, _end_of_stream: bool) -> DataAction {
         self.total_response_body_size += _body_size;
-        if _end_of_stream {
+        if _end_of_stream && self.config.debug {
             self.log_final_size();
         }
         DataAction::Continue
@@ -73,7 +79,7 @@ impl HttpContext for HTTPTrafficCounter {
 }
 impl HttpContextWrapper<HTTPTrafficCounterConfig> for HTTPTrafficCounter {
     fn on_config(&mut self, _config: Rc<HTTPTrafficCounterConfig>) {
-        self.config = Some(_config.clone());
+        self.config = _config.clone();
     }
 }
 
