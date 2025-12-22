@@ -47,7 +47,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: providers/higress
-          file: ./Dockerfile.builder
+          file: providers/higress/Dockerfile.builder
           push: true
           platforms: linux/amd64
           cache-from: type=gha
@@ -61,7 +61,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: providers/higress
-          file: ./Dockerfile
+          file: providers/higress/Dockerfile
           push: true
           platforms: linux/amd64
           cache-from: type=gha
