@@ -1,7 +1,6 @@
 use higress_wasm_rust::log::Log;
 use higress_wasm_rust::plugin_wrapper::{HttpContextWrapper, RootContextWrapper};
 use higress_wasm_rust::rule_matcher::{RuleMatcher, SharedRuleMatcher, on_configure};
-use multimap::MultiMap;
 use proxy_wasm::traits::*;
 use proxy_wasm::types::*;
 use serde::Deserialize;
