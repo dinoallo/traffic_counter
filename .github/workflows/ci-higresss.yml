@@ -49,7 +49,9 @@ jobs:
           sudo apt-get install -y make
 
       - name: Run linter
+        working-directory: providers/higress
         run: make lint-base
 
       - name: Run tests
+        working-directory: providers/higress
         run: make test-base
