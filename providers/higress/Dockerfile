@@ -8,7 +8,7 @@ COPY . .
 WORKDIR /workspace/extensions/$PLUGIN_NAME
 RUN if [ -f $PREBUILD ]; then sh $PREBUILD; fi
 RUN cargo build --target wasm32-wasip1 $BUILD_OPTS \
-    && cp target/wasm32-wasip1/release/*.wasm /main.wasm \
+    && cp /workspace/target/wasm32-wasip1/release/*.wasm /main.wasm \
     && cargo clean
 
 FROM scratch AS output
