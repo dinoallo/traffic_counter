@@ -1,10 +1,13 @@
 use higress_wasm_rust::log::Log;
 use higress_wasm_rust::plugin_wrapper::{HttpContextWrapper, RootContextWrapper};
 use higress_wasm_rust::rule_matcher::{RuleMatcher, SharedRuleMatcher, on_configure};
+use prefix_trie::PrefixMap;
+use proxy_wasm::hostcalls::get_property;
 use proxy_wasm::traits::*;
 use proxy_wasm::types::*;
 use serde::Deserialize;
 use std::cell::RefCell;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::DerefMut;
 use std::rc::Rc;
 
@@ -22,6 +25,9 @@ pub struct HTTPTrafficCounterConfig {
 pub struct HTTPTrafficCounter {
     log: Log,
     config: Rc<HTTPTrafficCounterConfig>,
+    track: bool,
+    white_list_v4: PrefixMap<ipnet::Ipv4Net, ()>,
+    white_list_v6: PrefixMap<ipnet::Ipv6Net, ()>,
     total_response_header_size: usize,
     total_response_body_size: usize,
 }
@@ -31,6 +37,9 @@ impl Default for HTTPTrafficCounter {
         Self {
             log: Log::new(PLUGIN_NAME.to_string()),
             config: Rc::new(HTTPTrafficCounterConfig::default()),
+            track: false,
+            white_list_v4: PrefixMap::new(),
+            white_list_v6: PrefixMap::new(),
             total_response_header_size: 0,
             total_response_body_size: 0,
         }
@@ -48,10 +57,89 @@ impl HTTPTrafficCounter {
             self.total_response_body_size
         ));
     }
+    fn is_white_listed(&self, ip: &ipnet::IpNet) -> bool {
+        match ip {
+            ipnet::IpNet::V4(v4_net) => self.white_list_v4.get_lpm(&v4_net).is_some(),
+            ipnet::IpNet::V6(v6_net) => self.white_list_v6.get_lpm(&v6_net).is_some(),
+        }
+    }
+}
+fn parse_ip(bytes: Bytes) -> Option<ipnet::IpNet> {
+    let source = String::from_utf8(bytes.to_vec()).ok()?;
+    let trimmed = source.trim();
+
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.contains('.') {
+        let segment = trimmed.split(':').next()?;
+        let addr: Ipv4Addr = segment.parse().ok()?;
+        let net = ipnet::Ipv4Net::new(addr, 32).ok()?;
+        return Some(ipnet::IpNet::V4(net));
+    }
+
+    if trimmed.starts_with('[') {
+        let closing = trimmed.find(']')?;
+        if closing <= 1 {
+            return None;
+        }
+        let segment = &trimmed[1..closing];
+        let addr: Ipv6Addr = segment.parse().ok()?;
+        let net = ipnet::Ipv6Net::new(addr, 128).ok()?;
+        return Some(ipnet::IpNet::V6(net));
+    }
+
+    if let Ok(addr) = trimmed.parse::<Ipv6Addr>() {
+        let net = ipnet::Ipv6Net::new(addr, 128).ok()?;
+        return Some(ipnet::IpNet::V6(net));
+    }
+
+    None
 }
 
 impl Context for HTTPTrafficCounter {}
 impl HttpContext for HTTPTrafficCounter {
+    fn on_http_request_headers(
+        &mut self,
+        _num_headers: usize,
+        _end_of_stream: bool,
+    ) -> HeaderAction {
+        let bytes = match get_property(vec!["source", "address"]) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                self.log.error("source.address not found");
+                return HeaderAction::Continue;
+            }
+            Err(e) => {
+                self.log.errorf(format_args!(
+                    "Error getting source address property: {:?}",
+                    e
+                ));
+                return HeaderAction::Continue;
+            }
+        };
+
+        let ip = match parse_ip(bytes) {
+            Some(ip) => ip,
+            None => {
+                self.log.error("Failed to parse source IP address");
+                return HeaderAction::Continue;
+            }
+        };
+
+        self.track = !self.is_white_listed(&ip);
+        if self.config.debug {
+            let (verb, action) = if self.track {
+                ("not in", "tracking")
+            } else {
+                ("in", "not tracking")
+            };
+            self.log
+                .infof(format_args!("IP {} is {} white list, {}", ip, verb, action));
+        }
+        HeaderAction::Continue
+    }
     fn on_http_response_headers(
         &mut self,
         _num_headers: usize,
