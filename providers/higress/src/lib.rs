@@ -1,6 +1,7 @@
 use higress_wasm_rust::log::Log;
 use higress_wasm_rust::plugin_wrapper::{HttpContextWrapper, RootContextWrapper};
 use higress_wasm_rust::rule_matcher::{RuleMatcher, SharedRuleMatcher, on_configure};
+use ipnet::IpNet;
 use prefix_trie::PrefixMap;
 use proxy_wasm::hostcalls::get_property;
 use proxy_wasm::traits::*;
@@ -21,6 +22,7 @@ fn debug_default() -> bool {
 pub struct HTTPTrafficCounterConfig {
     #[serde(default = "debug_default")]
     pub debug: bool,
+    pub white_list: Vec<String>,
 }
 pub struct HTTPTrafficCounter {
     log: Log,
@@ -57,29 +59,30 @@ impl HTTPTrafficCounter {
             self.total_response_body_size
         ));
     }
-    fn is_white_listed(&self, ip: &ipnet::IpNet) -> bool {
+    fn is_white_listed(&self, ip: &IpNet) -> bool {
         match ip {
-            ipnet::IpNet::V4(v4_net) => self.white_list_v4.get_lpm(&v4_net).is_some(),
-            ipnet::IpNet::V6(v6_net) => self.white_list_v6.get_lpm(&v6_net).is_some(),
+            IpNet::V4(v4_net) => self.white_list_v4.get_lpm(&v4_net).is_some(),
+            IpNet::V6(v6_net) => self.white_list_v6.get_lpm(&v6_net).is_some(),
         }
     }
 }
-fn parse_ip(bytes: Bytes) -> Option<ipnet::IpNet> {
-    let source = String::from_utf8(bytes.to_vec()).ok()?;
-    let trimmed = source.trim();
+fn parse_ip_from_str(raw: &str) -> Option<IpNet> {
+    let trimmed = raw.trim();
 
     if trimmed.is_empty() {
         return None;
     }
 
     if trimmed.contains('.') {
+        // Handle IPv4, possibly with port
         let segment = trimmed.split(':').next()?;
         let addr: Ipv4Addr = segment.parse().ok()?;
         let net = ipnet::Ipv4Net::new(addr, 32).ok()?;
-        return Some(ipnet::IpNet::V4(net));
+        return Some(IpNet::V4(net));
     }
 
     if trimmed.starts_with('[') {
+        // Handle IPv6 with port
         let closing = trimmed.find(']')?;
         if closing <= 1 {
             return None;
@@ -87,15 +90,23 @@ fn parse_ip(bytes: Bytes) -> Option<ipnet::IpNet> {
         let segment = &trimmed[1..closing];
         let addr: Ipv6Addr = segment.parse().ok()?;
         let net = ipnet::Ipv6Net::new(addr, 128).ok()?;
-        return Some(ipnet::IpNet::V6(net));
+        return Some(IpNet::V6(net));
     }
 
-    if let Ok(addr) = trimmed.parse::<Ipv6Addr>() {
-        let net = ipnet::Ipv6Net::new(addr, 128).ok()?;
-        return Some(ipnet::IpNet::V6(net));
-    }
+    trimmed
+        .parse::<Ipv6Addr>()
+        .ok()
+        .and_then(|addr| ipnet::Ipv6Net::new(addr, 128).ok())
+        .map(IpNet::V6)
+}
 
-    None
+fn parse_ip(bytes: Bytes) -> Option<IpNet> {
+    let source = String::from_utf8(bytes.to_vec()).ok()?;
+    parse_ip_from_str(&source)
+}
+
+pub fn parse_ipnet(net: &str) -> Option<IpNet> {
+    parse_ip_from_str(net)
 }
 
 impl Context for HTTPTrafficCounter {}
@@ -168,6 +179,29 @@ impl HttpContext for HTTPTrafficCounter {
 impl HttpContextWrapper<HTTPTrafficCounterConfig> for HTTPTrafficCounter {
     fn on_config(&mut self, _config: Rc<HTTPTrafficCounterConfig>) {
         self.config = _config.clone();
+
+        let mut white_list_v4 = PrefixMap::new();
+        let mut white_list_v6 = PrefixMap::new();
+
+        for entry in &self.config.white_list {
+            match parse_ipnet(entry) {
+                Some(IpNet::V4(net)) => {
+                    white_list_v4.insert(net, ());
+                }
+                Some(IpNet::V6(net)) => {
+                    white_list_v6.insert(net, ());
+                }
+                None => {
+                    self.log.errorf(format_args!(
+                        "Invalid CIDR entry in white_list: {} Not loading this entry.",
+                        entry
+                    ));
+                }
+            }
+        }
+
+        self.white_list_v4 = white_list_v4;
+        self.white_list_v6 = white_list_v6;
     }
 }
 
