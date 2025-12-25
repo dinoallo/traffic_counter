@@ -22,6 +22,8 @@ fn debug_default() -> bool {
 pub struct HTTPTrafficCounterConfig {
     #[serde(default = "debug_default")]
     pub debug: bool,
+    pub track_req: bool,
+    pub track_resp: bool,
     pub white_list: Vec<String>,
 }
 pub struct HTTPTrafficCounter {
@@ -30,6 +32,8 @@ pub struct HTTPTrafficCounter {
     track: bool,
     white_list_v4: PrefixMap<ipnet::Ipv4Net, ()>,
     white_list_v6: PrefixMap<ipnet::Ipv6Net, ()>,
+    total_request_header_size: usize,
+    total_request_body_size: usize,
     total_response_header_size: usize,
     total_response_body_size: usize,
 }
@@ -42,6 +46,8 @@ impl Default for HTTPTrafficCounter {
             track: false,
             white_list_v4: PrefixMap::new(),
             white_list_v6: PrefixMap::new(),
+            total_request_header_size: 0,
+            total_request_body_size: 0,
             total_response_header_size: 0,
             total_response_body_size: 0,
         }
@@ -51,12 +57,12 @@ impl Default for HTTPTrafficCounter {
 impl HTTPTrafficCounter {
     fn log_final_size(&self) {
         self.log.infof(format_args!(
-            "Final total response headers size: {}",
-            self.total_response_header_size
+            "Final total request/response headers size: {}/{}",
+            self.total_request_header_size, self.total_response_header_size
         ));
         self.log.infof(format_args!(
-            "Final total response body size: {}",
-            self.total_response_body_size
+            "Final total request/response body size: {}/{}",
+            self.total_request_body_size, self.total_response_body_size
         ));
     }
     fn is_white_listed(&self, ip: &IpNet) -> bool {
@@ -107,13 +113,40 @@ impl HttpContext for HTTPTrafficCounter {
             self.log
                 .infof(format_args!("IP {} is {} white list, {}", ip, verb, action));
         }
+        // if not tracking, skip further processing
+        if !self.track || !self.config.track_req {
+            return HeaderAction::Continue;
+        }
+        let headers = self.get_http_request_headers();
+        let mut size = 0;
+        for (name, value) in headers {
+            // Adding name, value, and the ": " + CRLF (approx 4 bytes per line)
+            size += name.len() + value.len() + 4;
+        }
+        self.total_request_header_size += size;
+        if _end_of_stream && self.config.debug {
+            self.log_final_size();
+        }
         HeaderAction::Continue
+    }
+    fn on_http_request_body(&mut self, _body_size: usize, _end_of_stream: bool) -> DataAction {
+        if !self.track || !self.config.track_req {
+            return DataAction::Continue;
+        }
+        self.total_request_body_size += _body_size;
+        if _end_of_stream && self.config.debug {
+            self.log_final_size();
+        }
+        DataAction::Continue
     }
     fn on_http_response_headers(
         &mut self,
         _num_headers: usize,
         _end_of_stream: bool,
     ) -> HeaderAction {
+        if !self.track || !self.config.track_resp {
+            return HeaderAction::Continue;
+        }
         let headers = self.get_http_response_headers();
         let mut size = 0;
         for (name, value) in headers {
@@ -127,6 +160,9 @@ impl HttpContext for HTTPTrafficCounter {
         HeaderAction::Continue
     }
     fn on_http_response_body(&mut self, _body_size: usize, _end_of_stream: bool) -> DataAction {
+        if !self.track || !self.config.track_resp {
+            return DataAction::Continue;
+        }
         self.total_response_body_size += _body_size;
         if _end_of_stream && self.config.debug {
             self.log_final_size();
