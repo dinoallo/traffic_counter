@@ -144,9 +144,13 @@ impl HttpContextWrapper<HTTPTrafficCounterConfig> for HTTPTrafficCounter {
         for entry in &self.config.white_list {
             match parse_ipnet(entry) {
                 Some(IpNet::V4(net)) => {
+                    self.log
+                        .infof(format_args!("Adding IPv4 CIDR to white_list: {}", net));
                     white_list_v4.insert(net, ());
                 }
                 Some(IpNet::V6(net)) => {
+                    self.log
+                        .infof(format_args!("Adding IPv6 CIDR to white_list: {}", net));
                     white_list_v6.insert(net, ());
                 }
                 None => {
