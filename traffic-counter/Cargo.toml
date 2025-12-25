@@ -27,6 +27,7 @@ libc = { workspace = true }
 hyper = { version = "0.14", features = ["full"] }
 prometheus = "0.13"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+async-trait = "0.1"
 
 [build-dependencies]
 anyhow = { workspace = true }

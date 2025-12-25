@@ -2,11 +2,14 @@ use std::{path::PathBuf, process::exit, time::Duration};
 
 use anyhow::Result;
 use clap::{Args, CommandFactory, Parser, Subcommand};
+use run::Run;
 use std::sync::Arc;
 
 mod export;
 mod model;
 mod node;
+mod packet;
+mod run;
 mod store;
 
 const VERSION: &str = env!("TRAFFIC_COUNTER_VERSION");
@@ -95,11 +98,12 @@ async fn run() -> Result<()> {
                     frame_size: cmd.frame_size,
                     block_timeout_ms: cmd.block_timeout_ms,
                 },
-                ignore_list: cmd.ignore_file,
-                accept_source_list: cmd.accept_source_file,
+                remote_whitelist: cmd.ignore_file,
+                local_addresslist: cmd.accept_source_file,
                 exporter: Arc::new(export::LogExporter::default()),
             };
-            node::run_packet_pipeline(opts).await?;
+            let runtime = node::NodeRuntime::new(opts)?;
+            runtime.run().await?;
         }
         Some(Commands::Version(_)) => {
             println!("traffic-counter {VERSION} ({GIT_DESCRIBE})");
