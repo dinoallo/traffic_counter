@@ -1,15 +1,13 @@
 use higress_wasm_rust::log::Log;
-use higress_wasm_rust::plugin_wrapper::{HttpContextWrapper, RootContextWrapper};
-use higress_wasm_rust::rule_matcher::{RuleMatcher, SharedRuleMatcher, on_configure};
+use higress_wasm_rust::plugin_wrapper::HttpContextWrapper;
 use ipnet::IpNet;
 use prefix_trie::PrefixMap;
 use proxy_wasm::hostcalls::get_property;
 use proxy_wasm::traits::*;
 use proxy_wasm::types::*;
 use serde::Deserialize;
-use std::cell::RefCell;
-use std::ops::DerefMut;
 use std::rc::Rc;
+use std::sync::Arc;
 
 const PLUGIN_NAME: &str = "traffic-counter";
 
@@ -18,19 +16,16 @@ fn debug_default() -> bool {
 }
 #[derive(Default, Debug, Deserialize, Clone)]
 #[serde(default)]
-pub struct HTTPTrafficCounterConfig {
-    #[serde(default = "debug_default")]
-    pub debug: bool,
-    pub track_req: bool,
-    pub track_resp: bool,
-    pub white_list: Vec<String>,
-}
+pub struct HTTPTrafficCounterConfig {}
 pub struct HTTPTrafficCounter {
+    // These variables are shared across all HTTP contexts
+    root_config: Arc<TrafficCounterConfig>,
+    white_list_v4: Arc<PrefixMap<ipnet::Ipv4Net, ()>>,
+    white_list_v6: Arc<PrefixMap<ipnet::Ipv6Net, ()>>,
+    // These variables are local to each HTTP context
     log: Log,
     config: Rc<HTTPTrafficCounterConfig>,
     track: bool,
-    white_list_v4: PrefixMap<ipnet::Ipv4Net, ()>,
-    white_list_v6: PrefixMap<ipnet::Ipv6Net, ()>,
     total_request_header_size: usize,
     total_request_body_size: usize,
     total_response_header_size: usize,
@@ -41,10 +36,11 @@ impl Default for HTTPTrafficCounter {
     fn default() -> Self {
         Self {
             log: Log::new(PLUGIN_NAME.to_string()),
+            root_config: Arc::new(TrafficCounterConfig::default()),
             config: Rc::new(HTTPTrafficCounterConfig::default()),
             track: false,
-            white_list_v4: PrefixMap::new(),
-            white_list_v6: PrefixMap::new(),
+            white_list_v4: Arc::new(PrefixMap::new()),
+            white_list_v6: Arc::new(PrefixMap::new()),
             total_request_header_size: 0,
             total_request_body_size: 0,
             total_response_header_size: 0,
@@ -110,7 +106,7 @@ impl HttpContext for HTTPTrafficCounter {
         };
 
         self.track = !self.is_white_listed(&ip);
-        if self.config.debug {
+        if self.root_config.debug {
             let (verb, action) = if self.track {
                 ("not in", "tracking")
             } else {
@@ -120,7 +116,7 @@ impl HttpContext for HTTPTrafficCounter {
                 .infof(format_args!("IP {} is {} white list, {}", ip, verb, action));
         }
         // if not tracking, skip further processing
-        if !self.track || !self.config.track_req {
+        if !self.track || !self.root_config.track_req {
             return HeaderAction::Continue;
         }
         let headers = self.get_http_request_headers();
@@ -130,17 +126,17 @@ impl HttpContext for HTTPTrafficCounter {
             size += name.len() + value.len() + 4;
         }
         self.total_request_header_size += size;
-        if _end_of_stream && self.config.debug {
+        if _end_of_stream && self.root_config.debug {
             self.log_final_size();
         }
         HeaderAction::Continue
     }
     fn on_http_request_body(&mut self, _body_size: usize, _end_of_stream: bool) -> DataAction {
-        if !self.track || !self.config.track_req {
+        if !self.track || !self.root_config.track_req {
             return DataAction::Continue;
         }
         self.total_request_body_size += _body_size;
-        if _end_of_stream && self.config.debug {
+        if _end_of_stream && self.root_config.debug {
             self.log_final_size();
         }
         DataAction::Continue
@@ -150,7 +146,7 @@ impl HttpContext for HTTPTrafficCounter {
         _num_headers: usize,
         _end_of_stream: bool,
     ) -> HeaderAction {
-        if !self.track || !self.config.track_resp {
+        if !self.track || !self.root_config.track_resp {
             return HeaderAction::Continue;
         }
         let headers = self.get_http_response_headers();
@@ -160,17 +156,17 @@ impl HttpContext for HTTPTrafficCounter {
             size += name.len() + value.len() + 4;
         }
         self.total_response_header_size += size;
-        if _end_of_stream && self.config.debug {
+        if _end_of_stream && self.root_config.debug {
             self.log_final_size();
         }
         HeaderAction::Continue
     }
     fn on_http_response_body(&mut self, _body_size: usize, _end_of_stream: bool) -> DataAction {
-        if !self.track || !self.config.track_resp {
+        if !self.track || !self.root_config.track_resp {
             return DataAction::Continue;
         }
         self.total_response_body_size += _body_size;
-        if _end_of_stream && self.config.debug {
+        if _end_of_stream && self.root_config.debug {
             self.log_final_size();
         }
         DataAction::Continue
@@ -179,11 +175,66 @@ impl HttpContext for HTTPTrafficCounter {
 impl HttpContextWrapper<HTTPTrafficCounterConfig> for HTTPTrafficCounter {
     fn on_config(&mut self, _config: Rc<HTTPTrafficCounterConfig>) {
         self.config = _config.clone();
+    }
+}
 
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct TrafficCounterConfig {
+    #[serde(default = "debug_default")]
+    pub debug: bool,
+    pub track_req: bool,
+    pub track_resp: bool,
+    pub white_list: Vec<String>,
+}
+
+impl Default for TrafficCounterConfig {
+    fn default() -> Self {
+        Self {
+            debug: debug_default(),
+            track_req: false,
+            track_resp: false,
+            white_list: Vec::new(),
+        }
+    }
+}
+
+struct TrafficCounter {
+    log: Log,
+    root_config: Arc<TrafficCounterConfig>,
+    white_list_v4: Arc<PrefixMap<ipnet::Ipv4Net, ()>>,
+    white_list_v6: Arc<PrefixMap<ipnet::Ipv6Net, ()>>,
+}
+
+impl Default for TrafficCounter {
+    fn default() -> Self {
+        Self {
+            log: Log::new(PLUGIN_NAME.to_string()),
+            root_config: Arc::new(TrafficCounterConfig::default()),
+            white_list_v4: Arc::new(PrefixMap::new()),
+            white_list_v6: Arc::new(PrefixMap::new()),
+        }
+    }
+}
+
+impl Context for TrafficCounter {}
+
+impl RootContext for TrafficCounter {
+    fn on_configure(&mut self, _plugin_configuration_size: usize) -> bool {
+        let config_buffer = self.get_plugin_configuration().unwrap_or_default();
+        let config =
+            if let Ok(config) = serde_json::from_slice::<TrafficCounterConfig>(&config_buffer) {
+                config
+            } else {
+                self.log
+                    .error("Using default configuration due to parse error.");
+                TrafficCounterConfig::default()
+            };
+        self.root_config = Arc::new(config);
         let mut white_list_v4 = PrefixMap::new();
         let mut white_list_v6 = PrefixMap::new();
 
-        for entry in &self.config.white_list {
+        for entry in &self.root_config.white_list {
             match parse_cidr_from_str(entry) {
                 Some(IpNet::V4(net)) => {
                     self.log
@@ -203,61 +254,29 @@ impl HttpContextWrapper<HTTPTrafficCounterConfig> for HTTPTrafficCounter {
                 }
             }
         }
-
-        self.white_list_v4 = white_list_v4;
-        self.white_list_v6 = white_list_v6;
+        self.white_list_v4 = Arc::new(white_list_v4);
+        self.white_list_v6 = Arc::new(white_list_v6);
+        true
     }
-}
-
-struct TrafficCounter {
-    log: Log,
-    rule_matcher: SharedRuleMatcher<HTTPTrafficCounterConfig>,
-}
-
-impl TrafficCounter {
-    fn new() -> Self {
-        Self {
+    fn create_http_context(&self, _context_id: u32) -> Option<Box<dyn HttpContext>> {
+        let http_traffic_counter = HTTPTrafficCounter {
             log: Log::new(PLUGIN_NAME.to_string()),
-            rule_matcher: Rc::new(RefCell::new(RuleMatcher::default())),
-        }
-    }
-}
-
-impl Context for TrafficCounter {}
-
-impl RootContext for TrafficCounter {
-    fn on_configure(&mut self, _plugin_configuration_size: usize) -> bool {
-        on_configure(
-            self,
-            _plugin_configuration_size,
-            self.rule_matcher.borrow_mut().deref_mut(),
-            &self.log,
-        )
-    }
-    fn create_http_context(&self, context_id: u32) -> Option<Box<dyn HttpContext>> {
-        self.create_http_context_use_wrapper(context_id)
+            root_config: self.root_config.clone(),
+            white_list_v4: self.white_list_v4.clone(),
+            white_list_v6: self.white_list_v6.clone(),
+            ..Default::default()
+        };
+        Some(Box::new(http_traffic_counter))
     }
     fn get_type(&self) -> Option<ContextType> {
         Some(ContextType::HttpContext)
     }
 }
 
-impl RootContextWrapper<HTTPTrafficCounterConfig> for TrafficCounter {
-    fn rule_matcher(&self) -> &SharedRuleMatcher<HTTPTrafficCounterConfig> {
-        &self.rule_matcher
-    }
-    fn create_http_context_wrapper(
-        &self,
-        _context_id: u32,
-    ) -> Option<Box<dyn HttpContextWrapper<HTTPTrafficCounterConfig>>> {
-        Some(Box::new(HTTPTrafficCounter::default()))
-    }
-}
-
 proxy_wasm::main! {{
     proxy_wasm::set_log_level(LogLevel::Trace);
     proxy_wasm::set_root_context(|_context_id| -> Box<dyn RootContext> {
-        Box::new(TrafficCounter::new())
+        Box::new(TrafficCounter::default())
     });
 }}
 
