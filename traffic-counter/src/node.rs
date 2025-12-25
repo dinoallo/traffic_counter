@@ -15,10 +15,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use tokio::{signal, task, time};
 
-use crate::{
-    model::AddressList,
-    store::{CounterTable, log_snapshot},
-};
+use crate::{model::AddressList, store::CounterTable};
 
 const ETH_P_IPV4: u16 = 0x0800;
 const ETH_P_IPV6: u16 = 0x86DD;
@@ -48,6 +45,7 @@ pub struct NodeOptions {
     pub ring: RingConfig,
     pub ignore_list: Option<PathBuf>,
     pub accept_source_list: Option<PathBuf>,
+    pub exporter: Arc<dyn crate::export::Export<Output = ()> + Send + Sync>,
 }
 
 fn validate_ring_config(cfg: &RingConfig) -> Result<()> {
@@ -109,12 +107,14 @@ pub async fn run_packet_pipeline(opts: NodeOptions) -> Result<()> {
     let reporter_running = running.clone();
     let report_interval = opts.report_interval;
     let report_natural = opts.report_natural;
+    let reporter_exporter = opts.exporter.clone();
     let reporter = tokio::spawn(async move {
         run_reporter(
             reporter_table,
             reporter_running,
             report_interval,
             report_natural,
+            reporter_exporter,
         )
         .await;
     });
@@ -136,7 +136,7 @@ pub async fn run_packet_pipeline(opts: NodeOptions) -> Result<()> {
     reporter.abort();
     let _ = reporter.await;
 
-    log_snapshot(&counters);
+    opts.exporter.export(counters.as_ref());
     Ok(())
 }
 
@@ -483,11 +483,12 @@ async fn run_reporter(
     running: Arc<AtomicBool>,
     interval: Duration,
     natural: bool,
+    exporter: Arc<dyn crate::export::Export<Output = ()> + Send + Sync>,
 ) {
     if natural {
-        run_natural_reporter(table, running, interval).await;
+        run_natural_reporter(table, running, interval, exporter).await;
     } else {
-        run_interval_reporter(table, running, interval).await;
+        run_interval_reporter(table, running, interval, exporter).await;
     }
 }
 
@@ -495,6 +496,7 @@ async fn run_interval_reporter(
     table: Arc<CounterTable>,
     running: Arc<AtomicBool>,
     interval: Duration,
+    exporter: Arc<dyn crate::export::Export<Output = ()> + Send + Sync>,
 ) {
     let mut ticker = time::interval(interval);
     loop {
@@ -502,7 +504,7 @@ async fn run_interval_reporter(
         if !running.load(Ordering::Relaxed) {
             break;
         }
-        log_snapshot(&table);
+        exporter.export(table.as_ref());
     }
 }
 
@@ -510,6 +512,7 @@ async fn run_natural_reporter(
     table: Arc<CounterTable>,
     running: Arc<AtomicBool>,
     interval: Duration,
+    exporter: Arc<dyn crate::export::Export<Output = ()> + Send + Sync>,
 ) {
     loop {
         let wait = duration_until_next_boundary(interval);
@@ -517,7 +520,7 @@ async fn run_natural_reporter(
         if !running.load(Ordering::Relaxed) {
             break;
         }
-        log_snapshot(&table);
+        exporter.export(table.as_ref());
     }
 }
 

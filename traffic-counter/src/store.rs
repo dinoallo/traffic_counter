@@ -6,12 +6,10 @@ use std::{
 
 use crate::model::{Counter, Flow};
 
-use chrono::Utc;
-
 pub const COUNTER_SHARDS: usize = 64;
 
 pub struct CounterTable {
-    shards: Vec<Mutex<HashMap<Flow, Counter>>>,
+    pub shards: Vec<Mutex<HashMap<Flow, Counter>>>,
 }
 
 impl CounterTable {
@@ -59,66 +57,10 @@ impl CounterTable {
         entry.tx_bytes = entry.tx_bytes.wrapping_add(bytes);
         entry.tx_packets = entry.tx_packets.wrapping_add(packets);
     }
-
-    /*
-    fn snapshot(&self) -> HashMap<IpKey, Counters> {
-        let mut merged = HashMap::new();
-        for shard in &self.shards {
-            let guard = shard.lock().expect("counter shard mutex poisoned");
-            for (key, counters) in guard.iter() {
-                merged.insert(*key, *counters);
-            }
-        }
-        merged
-    }
-    */
-
-    fn snapshot_shard(&self, shard_idx: usize) -> HashMap<Flow, Counter> {
-        let mut snapshot = HashMap::new();
-        if shard_idx < self.shards.len() {
-            let mut guard = self.shards[shard_idx]
-                .lock()
-                .expect("counter shard mutex poisoned");
-            for (key, counters) in guard.iter() {
-                snapshot.insert(*key, *counters);
-            }
-            guard.clear();
-        }
-        snapshot
-    }
 }
 
 impl Default for CounterTable {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-pub fn log_snapshot(table: &CounterTable) {
-    let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    /*
-    let total_bytes: u64 = table
-        .shards
-        .iter()
-        .map(|shard| {
-            let guard = shard.lock().expect("counter shard mutex poisoned");
-            guard.values().map(|c| c.bytes).sum::<u64>()
-        })
-        .sum();
-    let total_packets: u64 = table
-        .shards
-        .iter()
-        .map(|shard| {
-            let guard = shard.lock().expect("counter shard mutex poisoned");
-            guard.values().map(|c| c.packets).sum::<u64>()
-        })
-        .sum();
-    println!("[{timestamp}] Total bytes: {total_bytes} packets: {total_packets}");
-    */
-    for shard_idx in 0..table.shards.len() {
-        let snapshot = table.snapshot_shard(shard_idx);
-        for (key, counter) in &snapshot {
-            println!("[{timestamp}] flow {} - counter {}", key, counter);
-        }
     }
 }

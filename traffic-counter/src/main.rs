@@ -2,7 +2,9 @@ use std::{path::PathBuf, process::exit, time::Duration};
 
 use anyhow::Result;
 use clap::{Args, CommandFactory, Parser, Subcommand};
+use std::sync::Arc;
 
+mod export;
 mod model;
 mod node;
 mod store;
@@ -95,6 +97,7 @@ async fn run() -> Result<()> {
                 },
                 ignore_list: cmd.ignore_file,
                 accept_source_list: cmd.accept_source_file,
+                exporter: Arc::new(export::LogExporter::default()),
             };
             node::run_packet_pipeline(opts).await?;
         }
