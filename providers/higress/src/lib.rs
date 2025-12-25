@@ -61,8 +61,8 @@ impl HTTPTrafficCounter {
     }
     fn is_white_listed(&self, ip: &IpNet) -> bool {
         match ip {
-            IpNet::V4(v4_net) => self.white_list_v4.get_lpm(&v4_net).is_some(),
-            IpNet::V6(v6_net) => self.white_list_v6.get_lpm(&v6_net).is_some(),
+            IpNet::V4(v4_net) => self.white_list_v4.get_lpm(v4_net).is_some(),
+            IpNet::V6(v6_net) => self.white_list_v6.get_lpm(v6_net).is_some(),
         }
     }
 }
