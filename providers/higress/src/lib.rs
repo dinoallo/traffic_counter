@@ -66,48 +66,6 @@ impl HTTPTrafficCounter {
         }
     }
 }
-fn parse_ip_from_str(raw: &str) -> Option<IpNet> {
-    let trimmed = raw.trim();
-
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    if trimmed.contains('.') {
-        // Handle IPv4, possibly with port
-        let segment = trimmed.split(':').next()?;
-        let addr: Ipv4Addr = segment.parse().ok()?;
-        let net = ipnet::Ipv4Net::new(addr, 32).ok()?;
-        return Some(IpNet::V4(net));
-    }
-
-    if trimmed.starts_with('[') {
-        // Handle IPv6 with port
-        let closing = trimmed.find(']')?;
-        if closing <= 1 {
-            return None;
-        }
-        let segment = &trimmed[1..closing];
-        let addr: Ipv6Addr = segment.parse().ok()?;
-        let net = ipnet::Ipv6Net::new(addr, 128).ok()?;
-        return Some(IpNet::V6(net));
-    }
-
-    trimmed
-        .parse::<Ipv6Addr>()
-        .ok()
-        .and_then(|addr| ipnet::Ipv6Net::new(addr, 128).ok())
-        .map(IpNet::V6)
-}
-
-fn parse_ip(bytes: Bytes) -> Option<IpNet> {
-    let source = String::from_utf8(bytes.to_vec()).ok()?;
-    parse_ip_from_str(&source)
-}
-
-pub fn parse_ipnet(net: &str) -> Option<IpNet> {
-    parse_ip_from_str(net)
-}
 
 impl Context for HTTPTrafficCounter {}
 impl HttpContext for HTTPTrafficCounter {
@@ -256,3 +214,74 @@ proxy_wasm::main! {{
         Box::new(TrafficCounter::new())
     });
 }}
+
+fn parse_ip_from_str(raw: &str) -> Option<IpNet> {
+    let trimmed = raw.trim();
+
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.contains('.') {
+        // Handle IPv4, possibly with port
+        let segment = trimmed.split(':').next()?;
+        let addr: Ipv4Addr = segment.parse().ok()?;
+        let net = ipnet::Ipv4Net::new(addr, 32).ok()?;
+        return Some(IpNet::V4(net));
+    }
+
+    if trimmed.starts_with('[') {
+        // Handle IPv6 with port
+        let closing = trimmed.find(']')?;
+        if closing <= 1 {
+            return None;
+        }
+        let segment = &trimmed[1..closing];
+        let addr: Ipv6Addr = segment.parse().ok()?;
+        let net = ipnet::Ipv6Net::new(addr, 128).ok()?;
+        return Some(IpNet::V6(net));
+    }
+
+    trimmed
+        .parse::<Ipv6Addr>()
+        .ok()
+        .and_then(|addr| ipnet::Ipv6Net::new(addr, 128).ok())
+        .map(IpNet::V6)
+}
+
+fn parse_ip(bytes: Bytes) -> Option<IpNet> {
+    let source = String::from_utf8(bytes.to_vec()).ok()?;
+    parse_ip_from_str(&source)
+}
+
+pub fn parse_ipnet(net: &str) -> Option<IpNet> {
+    parse_ip_from_str(net)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_ipv4_with_port_segment() {
+        let expected = IpNet::V4(ipnet::Ipv4Net::new("10.1.2.3".parse().unwrap(), 32).unwrap());
+        assert_eq!(parse_ip_from_str("10.1.2.3:443"), Some(expected));
+    }
+
+    #[test]
+    fn parses_bracketed_ipv6_with_port() {
+        let expected = IpNet::V6(ipnet::Ipv6Net::new("2001:db8::5".parse().unwrap(), 128).unwrap());
+        assert_eq!(parse_ip_from_str("[2001:db8::5]:8080"), Some(expected));
+    }
+
+    #[test]
+    fn parse_ipnet_trims_and_accepts_ipv6() {
+        let expected = IpNet::V6(ipnet::Ipv6Net::new("2001:db8::8".parse().unwrap(), 128).unwrap());
+        assert_eq!(parse_ipnet(" 2001:db8::8 "), Some(expected));
+    }
+
+    #[test]
+    fn parse_ipnet_rejects_empty_input() {
+        assert!(parse_ipnet("   ").is_none());
+    }
+}
