@@ -5,6 +5,8 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use run::Run;
 use std::sync::Arc;
 
+mod classify;
+mod counter;
 mod export;
 mod model;
 mod node;
@@ -86,7 +88,7 @@ async fn run() -> Result<()> {
 
     match cli.command {
         Some(Commands::Node(cmd)) => {
-            let opts = node::NodeOptions {
+            let config = node::NodeConfig {
                 iface: cmd.iface,
                 workers: cmd.workers,
                 fanout_group: cmd.fanout_group,
@@ -100,7 +102,10 @@ async fn run() -> Result<()> {
                 },
                 remote_whitelist: cmd.ignore_file,
                 local_addresslist: cmd.accept_source_file,
-                exporter: Arc::new(export::LogExporter::default()),
+            };
+            let opts = node::NodeOptions {
+                config,
+                exporter: Arc::new(export::LogExporter),
             };
             let runtime = node::NodeRuntime::new(opts)?;
             runtime.run().await?;

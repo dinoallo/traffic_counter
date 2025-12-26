@@ -4,15 +4,16 @@ use std::{
     sync::Mutex,
 };
 
-use crate::model::{Counter, Flow};
+use crate::counter::L4Counter;
+use crate::model::Flow;
 
 pub const COUNTER_SHARDS: usize = 64;
 
-pub struct CounterTable {
-    pub shards: Vec<Mutex<HashMap<Flow, Counter>>>,
+pub struct L4CounterTable {
+    pub shards: Vec<Mutex<HashMap<Flow, L4Counter>>>,
 }
 
-impl CounterTable {
+impl L4CounterTable {
     fn new() -> Self {
         let mut shards = Vec::with_capacity(COUNTER_SHARDS);
         for _ in 0..COUNTER_SHARDS {
@@ -32,8 +33,8 @@ impl CounterTable {
         let idx = self.shard_index(&key);
         let mut guard = self.shards[idx]
             .lock()
-            .expect("counter shard mutex poisoned");
-        let entry = guard.entry(key).or_insert(Counter {
+            .expect("L4Counter shard mutex poisoned");
+        let entry = guard.entry(key).or_insert(L4Counter {
             rx_bytes: 0,
             rx_packets: 0,
             tx_bytes: 0,
@@ -47,8 +48,8 @@ impl CounterTable {
         let idx = self.shard_index(&key);
         let mut guard = self.shards[idx]
             .lock()
-            .expect("counter shard mutex poisoned");
-        let entry = guard.entry(key).or_insert(Counter {
+            .expect("L4Counter shard mutex poisoned");
+        let entry = guard.entry(key).or_insert(L4Counter {
             rx_bytes: 0,
             rx_packets: 0,
             tx_bytes: 0,
@@ -59,7 +60,7 @@ impl CounterTable {
     }
 }
 
-impl Default for CounterTable {
+impl Default for L4CounterTable {
     fn default() -> Self {
         Self::new()
     }

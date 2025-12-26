@@ -16,7 +16,7 @@ use crate::{
     model::AddressList,
     packet::{PacketSocket, validate_ring_config},
     run::Run,
-    store::CounterTable,
+    store::L4CounterTable,
 };
 
 pub use crate::packet::RingConfig;
@@ -26,7 +26,14 @@ pub const DEFAULT_BLOCK_COUNT: u32 = 64;
 pub const DEFAULT_FRAME_SIZE: u32 = 2048;
 pub const DEFAULT_BLOCK_TIMEOUT_MS: u32 = 100;
 
+// NodeOptions encapsulates all internal and external options needed to run a node
 pub struct NodeOptions {
+    pub config: NodeConfig,
+    pub exporter: Arc<dyn Export<Output = ()> + Send + Sync>,
+}
+
+// NodeConfig can be configured from CLI or other sources
+pub struct NodeConfig {
     pub iface: String,
     pub workers: usize,
     pub fanout_group: Option<u16>,
@@ -35,50 +42,40 @@ pub struct NodeOptions {
     pub ring: RingConfig,
     pub remote_whitelist: Option<PathBuf>,
     pub local_addresslist: Option<PathBuf>,
-    pub exporter: Arc<dyn Export<Output = ()> + Send + Sync>,
 }
 
 pub struct NodeRuntime {
-    iface: String,
-    workers: usize,
-    fanout_group: Option<u16>,
-    report_interval: Duration,
-    report_natural: bool,
-    ring_cfg: RingConfig,
+    pub config: NodeConfig,
+    pub exporter: Arc<dyn Export<Output = ()> + Send + Sync>,
     remote_whitelist: Arc<AddressList>,
     local_addresslist: Arc<AddressList>,
-    exporter: Arc<dyn Export<Output = ()> + Send + Sync>,
 }
 
 impl NodeRuntime {
     pub fn new(opts: NodeOptions) -> Result<Self> {
-        if opts.workers == 0 {
+        let NodeOptions { config, exporter } = opts;
+        if config.workers == 0 {
             return Err(anyhow!("workers must be at least 1"));
         }
-        if opts.report_interval.is_zero() {
+        if config.report_interval.is_zero() {
             return Err(anyhow!("report interval must be greater than zero"));
         }
-        validate_ring_config(&opts.ring)?;
+        validate_ring_config(&config.ring)?;
 
         let remote_whitelist = Arc::new(AddressList::from_option(
-            opts.remote_whitelist.as_deref(),
+            config.remote_whitelist.as_deref(),
             "remote whitelist",
         )?);
         let local_addresslist = Arc::new(AddressList::from_option(
-            opts.local_addresslist.as_deref(),
+            config.local_addresslist.as_deref(),
             "local address list",
         )?);
 
         Ok(Self {
-            iface: opts.iface,
-            workers: opts.workers,
-            fanout_group: opts.fanout_group,
-            report_interval: opts.report_interval,
-            report_natural: opts.report_natural,
-            ring_cfg: opts.ring,
+            config,
+            exporter,
             remote_whitelist,
             local_addresslist,
-            exporter: opts.exporter,
         })
     }
 }
@@ -91,19 +88,20 @@ impl Run for NodeRuntime {
 }
 
 async fn run_packet_pipeline(runtime: &NodeRuntime) -> Result<()> {
-    let counters = Arc::new(CounterTable::default());
+    let counters = Arc::new(L4CounterTable::default());
     let running = Arc::new(AtomicBool::new(true));
+    let config = &runtime.config;
 
-    let mut handles = Vec::with_capacity(runtime.workers);
-    for worker_id in 0..runtime.workers {
+    let mut handles = Vec::with_capacity(config.workers);
+    for worker_id in 0..config.workers {
         let counters_clone = counters.clone();
         let running_clone = running.clone();
         let remote_whitelist_clone = runtime.remote_whitelist.clone();
         let local_addresslist_clone = runtime.local_addresslist.clone();
         let ctx = WorkerContext {
-            iface: runtime.iface.clone(),
-            fanout_group: runtime.fanout_group,
-            ring_cfg: runtime.ring_cfg,
+            iface: config.iface.clone(),
+            fanout_group: config.fanout_group,
+            ring_cfg: config.ring,
         };
         handles.push(task::spawn(async move {
             worker_loop(
@@ -120,8 +118,8 @@ async fn run_packet_pipeline(runtime: &NodeRuntime) -> Result<()> {
 
     let reporter_table = counters.clone();
     let reporter_running = running.clone();
-    let reporter_interval = runtime.report_interval;
-    let reporter_natural = runtime.report_natural;
+    let reporter_interval = config.report_interval;
+    let reporter_natural = config.report_natural;
     let reporter_exporter = runtime.exporter.clone();
     let reporter = tokio::spawn(async move {
         run_reporter(
@@ -158,7 +156,7 @@ async fn run_packet_pipeline(runtime: &NodeRuntime) -> Result<()> {
 async fn worker_loop(
     worker_id: usize,
     running: Arc<AtomicBool>,
-    counters: Arc<CounterTable>,
+    counters: Arc<L4CounterTable>,
     ctx: WorkerContext,
     remote_whitelist: Arc<AddressList>,
     local_addresslist: Arc<AddressList>,
@@ -171,12 +169,19 @@ async fn worker_loop(
     let mut socket = PacketSocket::bind(&iface, fanout_group, ring_cfg)
         .with_context(|| format!("worker {worker_id}: failed to bind packet socket"))?;
     socket
-        .pump(&running, counters, &remote_whitelist, &local_addresslist)
+        .pump(
+            &running,
+            &remote_whitelist,
+            &local_addresslist,
+            move |flow, bytes, packets| {
+                counters.increment_tx(flow, bytes, packets);
+            },
+        )
         .await
 }
 
 async fn run_reporter(
-    table: Arc<CounterTable>,
+    table: Arc<L4CounterTable>,
     running: Arc<AtomicBool>,
     interval: Duration,
     natural: bool,
@@ -190,7 +195,7 @@ async fn run_reporter(
 }
 
 async fn run_interval_reporter(
-    table: Arc<CounterTable>,
+    table: Arc<L4CounterTable>,
     running: Arc<AtomicBool>,
     interval: Duration,
     exporter: Arc<dyn Export<Output = ()> + Send + Sync>,
@@ -206,7 +211,7 @@ async fn run_interval_reporter(
 }
 
 async fn run_natural_reporter(
-    table: Arc<CounterTable>,
+    table: Arc<L4CounterTable>,
     running: Arc<AtomicBool>,
     interval: Duration,
     exporter: Arc<dyn Export<Output = ()> + Send + Sync>,

@@ -4,19 +4,13 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
     ptr, slice,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering, fence},
-    },
+    sync::atomic::{AtomicBool, Ordering, fence},
 };
 
 use anyhow::{Context, Result, anyhow};
 use tokio::io::unix::AsyncFd;
 
-use crate::{
-    model::{AddressList, Flow},
-    store::CounterTable,
-};
+use crate::model::{AddressList, Flow};
 
 const ETH_P_IPV4: u16 = 0x0800;
 const ETH_P_IPV6: u16 = 0x86DD;
@@ -91,21 +85,25 @@ impl PacketSocket {
         Ok(Self { fd: owned_fd, ring })
     }
 
-    pub async fn pump(
+    pub async fn pump<F>(
         &mut self,
         running: &AtomicBool,
-        counters: Arc<CounterTable>,
         remote_whitelist: &AddressList,
         local_addresslist: &AddressList,
-    ) -> Result<()> {
+        mut on_flow: F,
+    ) -> Result<()>
+    where
+        F: FnMut(Flow, u64, u64) + Send,
+    {
         let block_nr = self.ring.block_count() as usize;
         while running.load(Ordering::Relaxed) {
             let mut made_progress = false;
             for _ in 0..block_nr {
-                if self
-                    .ring
-                    .consume_next_block(&counters, remote_whitelist, local_addresslist)?
-                {
+                if self.ring.consume_next_block(
+                    remote_whitelist,
+                    local_addresslist,
+                    &mut on_flow,
+                )? {
                     made_progress = true;
                 }
             }
@@ -204,24 +202,30 @@ impl PacketRing {
         self.req.tp_block_size as usize
     }
 
-    fn consume_next_block(
+    fn consume_next_block<F>(
         &mut self,
-        counters: &CounterTable,
         remote_whitelist: &AddressList,
         local_addresslist: &AddressList,
-    ) -> Result<bool> {
+        on_flow: &mut F,
+    ) -> Result<bool>
+    where
+        F: FnMut(Flow, u64, u64),
+    {
         let idx = self.current_block;
         self.current_block = (self.current_block + 1) % self.req.tp_block_nr.max(1);
-        self.consume_block(idx, counters, remote_whitelist, local_addresslist)
+        self.consume_block(idx, remote_whitelist, local_addresslist, on_flow)
     }
 
-    fn consume_block(
+    fn consume_block<F>(
         &mut self,
         idx: u32,
-        counters: &CounterTable,
         remote_whitelist: &AddressList,
         local_addresslist: &AddressList,
-    ) -> Result<bool> {
+        on_flow: &mut F,
+    ) -> Result<bool>
+    where
+        F: FnMut(Flow, u64, u64),
+    {
         let block_ptr = unsafe { self.base.add(idx as usize * self.block_size()) };
         let desc = block_ptr as *mut libc::tpacket_block_desc;
         let status = unsafe { (*desc).hdr.bh1.block_status };
@@ -261,7 +265,7 @@ impl PacketRing {
                     let src_allowed =
                         local_addresslist_empty || local_addresslist.contains(&flow.local_ip);
                     if dst_allowed && src_allowed {
-                        counters.increment_tx(flow, bytes, packets);
+                        on_flow(flow, bytes, packets);
                     }
                 }
                 if next == 0 {

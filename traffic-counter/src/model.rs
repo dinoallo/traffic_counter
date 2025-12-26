@@ -11,6 +11,7 @@ pub struct AddressList {
     ipv6: Vec<Ipv6Net>,
 }
 
+//TODO: Use ipnet crate for this?
 struct Ipv4Net {
     network: u32,
     mask: u32,
@@ -36,24 +37,6 @@ impl std::fmt::Display for Flow {
             f,
             "{}:{} -> {}:{} proto:{}",
             self.local_ip, self.local_port, self.remote_ip, self.remote_port, self.protocol
-        )
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct Counter {
-    pub rx_bytes: u64,
-    pub rx_packets: u64,
-    pub tx_bytes: u64,
-    pub tx_packets: u64,
-}
-
-impl std::fmt::Display for Counter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "rx_bytes: {} rx_packets: {} tx_bytes: {} tx_packets: {}",
-            self.rx_bytes, self.rx_packets, self.tx_bytes, self.tx_packets
         )
     }
 }
