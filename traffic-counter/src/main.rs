@@ -5,15 +5,16 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use run::Run;
 use std::sync::Arc;
 
-mod classify;
 mod counter;
 mod export;
+mod factory;
 mod k8s;
 mod label;
 mod model;
 mod node;
 mod packet;
 mod run;
+mod serve;
 mod store;
 mod traffic;
 
