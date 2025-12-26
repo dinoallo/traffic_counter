@@ -28,6 +28,8 @@ hyper = { version = "0.14", features = ["full"] }
 prometheus = "0.13"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 async-trait = "0.1"
+kube = { version = "0.90.0", default-features = false, features = ["client", "rustls-tls"] }
+k8s-openapi = { version = "0.21.1", features = ["latest"], default-features = false }
 
 [build-dependencies]
 anyhow = { workspace = true }
