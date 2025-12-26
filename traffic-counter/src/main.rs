@@ -8,11 +8,14 @@ use std::sync::Arc;
 mod classify;
 mod counter;
 mod export;
+mod k8s;
+mod label;
 mod model;
 mod node;
 mod packet;
 mod run;
 mod store;
+mod traffic;
 
 const VERSION: &str = env!("TRAFFIC_COUNTER_VERSION");
 const GIT_DESCRIBE: &str = match option_env!("TRAFFIC_COUNTER_GIT_DESC") {
