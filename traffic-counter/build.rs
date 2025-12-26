@@ -14,6 +14,7 @@ use aya_build::{Package, Toolchain};
 use cargo_metadata::{Artifact, CompilerMessage, Message, Target};
 
 fn main() -> anyhow::Result<()> {
+    compile_protos()?;
     embed_git_metadata()?;
     println!(
         "cargo:rustc-env=TRAFFIC_COUNTER_VERSION={}",
@@ -41,6 +42,15 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
     build_ebpf_quiet([ebpf_package], Toolchain::default())
+}
+
+fn compile_protos() -> Result<()> {
+    const PROTO: &str = "proto/traffic.proto";
+    println!("cargo:rerun-if-changed={PROTO}");
+    tonic_build::configure()
+        .build_client(false)
+        .compile(&[PROTO], &["proto"])
+        .context("failed to compile traffic protobufs")
 }
 
 fn embed_git_metadata() -> Result<()> {

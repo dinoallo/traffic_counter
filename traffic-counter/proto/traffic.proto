@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package trafficcounter.v1;
+
+message HttpMeta {
+  string host_ip = 1;
+  string client_ip = 2;
+  string host = 3;
+}
+
+message SvcMeta {
+  string namespace = 1;
+  string service_name = 2;
+}
+
+message L4Meta {
+  string local_ip = 1;
+  string remote_ip = 2;
+  uint32 local_port = 3;
+  uint32 remote_port = 4;
+  string protocol = 5;
+}
+
+message PodMeta {
+  string namespace = 1;
+  string pod_name = 2;
+}
+
+message K8sIngressTraffic {
+  HttpMeta http_meta = 1;
+  SvcMeta svc_meta = 2;
+  uint64 request_bytes = 3;
+  uint64 response_bytes = 4;
+}
+
+message K8sNodePortTraffic {
+  L4Meta l4_meta = 1;
+  SvcMeta svc_meta = 2;
+  uint64 rx_bytes = 3;
+  uint64 rx_packets = 4;
+  uint64 tx_bytes = 5;
+  uint64 tx_packets = 6;
+}
+
+message K8sPodToWorldTraffic {
+  L4Meta l4_meta = 1;
+  PodMeta pod_meta = 2;
+  uint64 rx_bytes = 3;
+  uint64 rx_packets = 4;
+  uint64 tx_bytes = 5;
+  uint64 tx_packets = 6;
+}
+
+message UnknownTraffic {}
+
+message K8sTraffic {
+  oneof kind {
+    K8sIngressTraffic ingress = 1;
+    K8sNodePortTraffic node_port = 2;
+    K8sPodToWorldTraffic pod_to_world = 3;
+  }
+}
+
+message Traffic {
+  oneof kind {
+    K8sTraffic k8s = 1;
+    UnknownTraffic unknown = 2;
+  }
+}
+
+message IngestTrafficRequest {
+  Traffic traffic = 1;
+}
+
+message IngestTrafficResponse {}
+
+service TrafficIngestor {
+  rpc IngestTraffic(IngestTrafficRequest) returns (IngestTrafficResponse);
+}
