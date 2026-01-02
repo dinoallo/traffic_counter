@@ -12,11 +12,11 @@ use async_trait::async_trait;
 use tokio::{signal, task, time};
 
 use crate::{
+    counter::{L4Counter, L4CounterTable},
     export::Export,
     model::AddressList,
     packet::{PacketSocket, validate_ring_config},
     run::Run,
-    store::L4CounterTable,
 };
 
 pub use crate::packet::RingConfig;
@@ -174,7 +174,14 @@ async fn worker_loop(
             &remote_whitelist,
             &local_addresslist,
             move |flow, bytes, packets| {
-                counters.increment_tx(flow, bytes, packets);
+                counters.increment(
+                    flow,
+                    L4Counter {
+                        tx_bytes: bytes,
+                        tx_packets: packets,
+                        ..Default::default()
+                    },
+                );
             },
         )
         .await

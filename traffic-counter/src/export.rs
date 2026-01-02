@@ -1,4 +1,4 @@
-use crate::store::L4CounterTable;
+use crate::counter::L4CounterTable;
 use chrono::Utc;
 
 /// Trait representing anything that can export itself into another form.

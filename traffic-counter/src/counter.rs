@@ -1,4 +1,6 @@
-use crate::traffic::{K8sNodePortTraffic, K8sPodToWorldTraffic};
+use crate::traffic::K8sNodePortTraffic;
+use crate::store::CounterTable;
+use crate::model::Flow;
 
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
@@ -10,13 +12,15 @@ pub struct HttpCounter {
     pub host: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct L4Counter {
     pub rx_bytes: u64,
     pub rx_packets: u64,
     pub tx_bytes: u64,
     pub tx_packets: u64,
 }
+
+pub type L4CounterTable = CounterTable<Flow, L4Counter>;
 
 impl std::fmt::Display for HttpCounter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -57,6 +61,19 @@ impl std::fmt::Display for Counter {
 pub trait TrafficCount<T> {
     fn increment(&mut self, traffic: T);
     fn clear(&mut self);
+}
+
+impl TrafficCount<L4Counter> for L4Counter {
+    fn increment(&mut self, traffic: L4Counter) {
+        self.rx_bytes += traffic.rx_bytes;
+        self.rx_packets += traffic.rx_packets;
+        self.tx_bytes += traffic.tx_bytes;
+        self.tx_packets += traffic.tx_packets;
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
 }
 
 impl TrafficCount<K8sNodePortTraffic> for K8sNodePortTraffic {
