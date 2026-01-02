@@ -110,6 +110,8 @@ pub enum ProtoConversionError {
     MissingField(&'static str),
     #[error("value in field '{0}' exceeds supported range")]
     OutOfRange(&'static str),
+    #[error("invalid IP address in field '{0}'")]
+    InvalidIp(&'static str),
 }
 
 impl TryFrom<pb::Traffic> for Traffic {
@@ -218,12 +220,27 @@ impl TryFrom<pb::K8sPodToWorldTraffic> for traffic::K8sPodToWorldTraffic {
 
 fn convert_l4_meta(meta: pb::L4Meta) -> Result<traffic::L4Meta, ProtoConversionError> {
     Ok(traffic::L4Meta {
-        local_ip: meta.local_ip,
-        remote_ip: meta.remote_ip,
+        local_ip: meta
+            .local_ip
+            .parse()
+            .map_err(|_| ProtoConversionError::InvalidIp("l4_meta.local_ip"))?,
+        remote_ip: meta
+            .remote_ip
+            .parse()
+            .map_err(|_| ProtoConversionError::InvalidIp("l4_meta.remote_ip"))?,
         local_port: as_u16(meta.local_port, "l4_meta.local_port")?,
         remote_port: as_u16(meta.remote_port, "l4_meta.remote_port")?,
-        protocol: meta.protocol,
+        protocol: parse_protocol(&meta.protocol),
     })
+}
+
+fn parse_protocol(proto: &str) -> u8 {
+    match proto.to_lowercase().as_str() {
+        "tcp" | "6" => 6,
+        "udp" | "17" => 17,
+        "icmp" | "1" => 1,
+        _ => proto.parse().unwrap_or(0),
+    }
 }
 
 fn require<T>(value: Option<T>, field: &'static str) -> Result<T, ProtoConversionError> {
@@ -232,4 +249,8 @@ fn require<T>(value: Option<T>, field: &'static str) -> Result<T, ProtoConversio
 
 fn as_u16(value: u32, field: &'static str) -> Result<u16, ProtoConversionError> {
     u16::try_from(value).map_err(|_| ProtoConversionError::OutOfRange(field))
+}
+
+fn as_u8(value: u32, field: &'static str) -> Result<u8, ProtoConversionError> {
+    u8::try_from(value).map_err(|_| ProtoConversionError::OutOfRange(field))
 }

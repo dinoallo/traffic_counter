@@ -38,14 +38,42 @@ impl TrafficLabel<K8sIngressTraffic> for K8sTrafficLabeler {
 #[async_trait]
 impl TrafficLabel<K8sNodePortTraffic> for K8sTrafficLabeler {
     async fn label(&self, traffic: K8sNodePortTraffic) -> Result<K8sNodePortTraffic> {
-        Ok(traffic)
+        let result = self
+            .k8s_inquirer
+            .inquire_nodeport(&traffic.l4_meta)
+            .await?;
+        let Some(svc_meta) = result else {
+            return Ok(traffic);
+        };
+        Ok(K8sNodePortTraffic {
+            l4_meta: traffic.l4_meta,
+            svc_meta,
+            rx_bytes: traffic.rx_bytes,
+            rx_packets: traffic.rx_packets,
+            tx_bytes: traffic.tx_bytes,
+            tx_packets: traffic.tx_packets,
+        })
     }
 }
 
 #[async_trait]
 impl TrafficLabel<K8sPodToWorldTraffic> for K8sTrafficLabeler {
     async fn label(&self, traffic: K8sPodToWorldTraffic) -> Result<K8sPodToWorldTraffic> {
-        Ok(traffic)
+        let result = self
+            .k8s_inquirer
+            .inquire_pod_to_world(&traffic.l4_meta)
+            .await?;
+        let Some(pod_meta) = result else {
+            return Ok(traffic);
+        };
+        Ok(K8sPodToWorldTraffic {
+            l4_meta: traffic.l4_meta,
+            pod_meta,
+            rx_bytes: traffic.rx_bytes,
+            rx_packets: traffic.rx_packets,
+            tx_bytes: traffic.tx_bytes,
+            tx_packets: traffic.tx_packets,
+        })
     }
 }
 
@@ -84,6 +112,7 @@ impl TrafficLabel<Traffic> for TrafficLabeler {
                 let labeled = self.k8s_labeler.label(t).await?;
                 Ok(Traffic::K8s(labeled))
             }
+            Traffic::L4(_) => Ok(traffic),
             Traffic::Unknown => Ok(traffic),
         }
     }

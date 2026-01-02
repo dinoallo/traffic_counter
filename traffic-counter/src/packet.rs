@@ -10,7 +10,8 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use tokio::io::unix::AsyncFd;
 
-use crate::model::{AddressList, Flow};
+use crate::model::AddressList;
+use crate::traffic::{L4Meta, L4Traffic};
 
 const ETH_P_IPV4: u16 = 0x0800;
 const ETH_P_IPV6: u16 = 0x86DD;
@@ -85,25 +86,26 @@ impl PacketSocket {
         Ok(Self { fd: owned_fd, ring })
     }
 
-    pub async fn pump<F>(
+    pub async fn pump<F, Fut>(
         &mut self,
         running: &AtomicBool,
         remote_whitelist: &AddressList,
         local_addresslist: &AddressList,
-        mut on_flow: F,
+        mut on_traffic: F,
     ) -> Result<()>
     where
-        F: FnMut(Flow, u64, u64) + Send,
+        F: FnMut(L4Meta, L4Traffic) -> Fut + Send,
+        Fut: std::future::Future<Output = ()> + Send,
     {
         let block_nr = self.ring.block_count() as usize;
         while running.load(Ordering::Relaxed) {
             let mut made_progress = false;
             for _ in 0..block_nr {
-                if self.ring.consume_next_block(
-                    remote_whitelist,
-                    local_addresslist,
-                    &mut on_flow,
-                )? {
+                if self
+                    .ring
+                    .consume_next_block(remote_whitelist, local_addresslist, &mut on_traffic)
+                    .await?
+                {
                     made_progress = true;
                 }
             }
@@ -202,78 +204,131 @@ impl PacketRing {
         self.req.tp_block_size as usize
     }
 
-    fn consume_next_block<F>(
+    async fn consume_next_block<F, Fut>(
         &mut self,
         remote_whitelist: &AddressList,
         local_addresslist: &AddressList,
-        on_flow: &mut F,
+        on_traffic: &mut F,
     ) -> Result<bool>
     where
-        F: FnMut(Flow, u64, u64),
+        F: FnMut(L4Meta, L4Traffic) -> Fut,
+        Fut: std::future::Future<Output = ()>,
     {
         let idx = self.current_block;
         self.current_block = (self.current_block + 1) % self.req.tp_block_nr.max(1);
-        self.consume_block(idx, remote_whitelist, local_addresslist, on_flow)
+        self.consume_block(idx, remote_whitelist, local_addresslist, on_traffic)
+            .await
     }
 
-    fn consume_block<F>(
+    async fn consume_block<F, Fut>(
         &mut self,
         idx: u32,
         remote_whitelist: &AddressList,
         local_addresslist: &AddressList,
-        on_flow: &mut F,
+        on_traffic: &mut F,
     ) -> Result<bool>
     where
-        F: FnMut(Flow, u64, u64),
+        F: FnMut(L4Meta, L4Traffic) -> Fut,
+        Fut: std::future::Future<Output = ()>,
     {
-        let block_ptr = unsafe { self.base.add(idx as usize * self.block_size()) };
-        let desc = block_ptr as *mut libc::tpacket_block_desc;
-        let status = unsafe { (*desc).hdr.bh1.block_status };
-        if status & libc::TP_STATUS_USER == 0 {
-            return Ok(false);
-        }
+        // 1. Check status and get loop bounds.
+        // We do this in a block to ensure `desc` and `block_ptr` are not held.
+        let (num_pkts, mut offset) = {
+            let block_ptr = unsafe { self.base.add(idx as usize * self.block_size()) };
+            let desc = block_ptr as *mut libc::tpacket_block_desc;
+            let status = unsafe { (*desc).hdr.bh1.block_status };
+            if status & libc::TP_STATUS_USER == 0 {
+                return Ok(false);
+            }
+            fence(Ordering::Acquire);
+            unsafe {
+                let hdr = &(*desc).hdr.bh1;
+                (hdr.num_pkts, hdr.offset_to_first_pkt as usize)
+            }
+        };
 
-        fence(Ordering::Acquire);
-        unsafe {
-            let remote_whitelist_empty = remote_whitelist.is_empty();
-            let local_addresslist_empty = local_addresslist.is_empty();
-            let hdr = &mut (*desc).hdr.bh1;
-            let mut offset = hdr.offset_to_first_pkt as usize;
-            let block_size = self.block_size();
-            for _ in 0..hdr.num_pkts {
-                if offset >= block_size {
-                    break;
-                }
-                let frame_ptr = block_ptr.add(offset) as *mut libc::tpacket3_hdr;
-                let next = (*frame_ptr).tp_next_offset as usize;
-                let snaplen = (*frame_ptr).tp_snaplen as usize;
-                let packet_len = (*frame_ptr).tp_len as usize;
-                let mac = (*frame_ptr).tp_mac as usize;
-                if snaplen == 0 {
-                    break;
-                }
-                let data_offset = offset + mac;
-                if data_offset >= block_size || data_offset + snaplen > block_size {
-                    break;
-                }
-                let data = slice::from_raw_parts(block_ptr.add(data_offset), snaplen);
-                if let Some(flow) = extract_flow(data) {
-                    let bytes = packet_len as u64;
-                    let packets = 1;
-                    let dst_allowed =
-                        remote_whitelist_empty || !remote_whitelist.contains(&flow.remote_ip);
-                    let src_allowed =
-                        local_addresslist_empty || local_addresslist.contains(&flow.local_ip);
-                    if dst_allowed && src_allowed {
-                        on_flow(flow, bytes, packets);
+        let remote_whitelist_empty = remote_whitelist.is_empty();
+        let local_addresslist_empty = local_addresslist.is_empty();
+        let block_size = self.block_size();
+
+        // Base address for recalculating pointers inside the loop.
+        // self.base is *mut u8, which is not Send, but we access it via self (which is &mut self, not Send across await if self is held... wait).
+        // self is held across await because we call on_traffic which is `&mut F`.
+        // But `self.base` is just a field.
+        // The issue is that the async state machine captures local variables.
+        // Previous error said `block_ptr` (local var) was not Send.
+        // By not having `block_ptr` in the outer scope, we should be safe.
+        // But we need `block_ptr` inside the loop. We can recompute it from `self.base`.
+        // `self` is `&mut PacketRing`. `PacketRing` is `Send`. `&mut PacketRing` is `Send`.
+        // So accessing `self.base` inside the loop (between awaits) is fine.
+
+        for _ in 0..num_pkts {
+            if offset >= block_size {
+                break;
+            }
+
+            // Recompute block_ptr here.
+            // We need to ensure nothing derived from it lives across await.
+            let (next, traffic_opt) = {
+                let block_ptr = unsafe { self.base.add(idx as usize * self.block_size()) };
+                unsafe {
+                    let frame_ptr = block_ptr.add(offset) as *mut libc::tpacket3_hdr;
+                    let next = (*frame_ptr).tp_next_offset as usize;
+                    let snaplen = (*frame_ptr).tp_snaplen as usize;
+                    let packet_len = (*frame_ptr).tp_len as usize;
+                    let mac = (*frame_ptr).tp_mac as usize;
+
+                    if snaplen == 0 {
+                        (0, None)
+                    } else {
+                        let data_offset = offset + mac;
+                        if data_offset >= block_size || data_offset + snaplen > block_size {
+                            (next, None)
+                        } else {
+                            let data = slice::from_raw_parts(block_ptr.add(data_offset), snaplen);
+                            if let Some(l4_meta) = extract_l4_meta(data) {
+                                let bytes = packet_len as u64;
+                                let packets = 1;
+                                let traffic = L4Traffic {
+                                    l4_meta,
+                                    rx_bytes: 0,
+                                    rx_packets: 0,
+                                    tx_bytes: bytes,
+                                    tx_packets: packets,
+                                };
+                                (next, Some((l4_meta, traffic)))
+                            } else {
+                                (next, None)
+                            }
+                        }
                     }
                 }
-                if next == 0 {
-                    break;
+            };
+
+            // Now await. No raw pointers are in scope here.
+            if let Some((l4_meta, traffic)) = traffic_opt {
+                let dst_allowed =
+                    remote_whitelist_empty || !remote_whitelist.contains(&l4_meta.remote_ip);
+                let src_allowed =
+                    local_addresslist_empty || local_addresslist.contains(&l4_meta.local_ip);
+
+                if dst_allowed && src_allowed {
+                    on_traffic(l4_meta, traffic).await;
                 }
-                offset += next;
             }
-            hdr.block_status = libc::TP_STATUS_KERNEL;
+
+            if next == 0 {
+                break;
+            }
+            offset += next;
+        }
+
+        {
+            let block_ptr = unsafe { self.base.add(idx as usize * self.block_size()) };
+            let desc = block_ptr as *mut libc::tpacket_block_desc;
+            unsafe {
+                (*desc).hdr.bh1.block_status = libc::TP_STATUS_KERNEL;
+            }
         }
         fence(Ordering::Release);
         Ok(true)
@@ -354,7 +409,7 @@ fn configure_fanout(fd: RawFd, fanout_group: Option<u16>) -> Result<()> {
     Ok(())
 }
 
-fn extract_flow(frame: &[u8]) -> Option<Flow> {
+fn extract_l4_meta(frame: &[u8]) -> Option<L4Meta> {
     if frame.len() < ETH_HEADER_LEN {
         return None;
     }
@@ -378,19 +433,19 @@ fn extract_flow(frame: &[u8]) -> Option<Flow> {
     }
 }
 
-fn parse_segment(segment: &[u8]) -> Option<Flow> {
+fn parse_segment(segment: &[u8]) -> Option<L4Meta> {
     if segment.is_empty() {
         return None;
     }
     let version = segment[0] >> 4;
     match version {
-        4 => parse_ipv4_flow(segment),
-        6 => parse_ipv6_flow(segment),
+        4 => parse_ipv4_meta(segment),
+        6 => parse_ipv6_meta(segment),
         _ => None,
     }
 }
 
-fn parse_ipv4_flow(segment: &[u8]) -> Option<Flow> {
+fn parse_ipv4_meta(segment: &[u8]) -> Option<L4Meta> {
     if segment.len() < IPV4_MIN_HEADER {
         return None;
     }
@@ -412,7 +467,7 @@ fn parse_ipv4_flow(segment: &[u8]) -> Option<Flow> {
         segment[19],
     ));
     let (src_port, dst_port) = parse_ports(proto, &segment[ihl..]);
-    Some(Flow {
+    Some(L4Meta {
         local_ip: src_ip,
         remote_ip: dst_ip,
         local_port: src_port,
@@ -421,7 +476,7 @@ fn parse_ipv4_flow(segment: &[u8]) -> Option<Flow> {
     })
 }
 
-fn parse_ipv6_flow(segment: &[u8]) -> Option<Flow> {
+fn parse_ipv6_meta(segment: &[u8]) -> Option<L4Meta> {
     if segment.len() < IPV6_HEADER_LEN {
         return None;
     }
@@ -448,7 +503,7 @@ fn parse_ipv6_flow(segment: &[u8]) -> Option<Flow> {
     ));
     let payload = &segment[IPV6_HEADER_LEN..];
     let (src_port, dst_port) = parse_ports(proto, payload);
-    Some(Flow {
+    Some(L4Meta {
         local_ip: src_ip,
         remote_ip: dst_ip,
         local_port: src_port,

@@ -1,9 +1,10 @@
-use std::{path::PathBuf, process::exit, time::Duration};
+use std::{path::PathBuf, process::exit, sync::Arc};
 
 use anyhow::Result;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use run::Run;
-use std::sync::Arc;
+
+use crate::{factory::TrafficFactory, label::TrafficLabeler};
 
 mod counter;
 mod export;
@@ -35,7 +36,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Run packet-socket ingestion pipeline
-    Node(NodeCommand),
+    // Node(NodeCommand),
     Version(VersionCommand),
 }
 
@@ -91,29 +92,27 @@ async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Node(cmd)) => {
-            let config = node::NodeConfig {
-                iface: cmd.iface,
-                workers: cmd.workers,
-                fanout_group: cmd.fanout_group,
-                report_interval: Duration::from_secs(cmd.report_interval_secs.max(1)),
-                report_natural: cmd.report_natural,
-                ring: node::RingConfig {
-                    block_size: cmd.block_size,
-                    block_count: cmd.block_count,
-                    frame_size: cmd.frame_size,
-                    block_timeout_ms: cmd.block_timeout_ms,
-                },
-                remote_whitelist: cmd.ignore_file,
-                local_addresslist: cmd.accept_source_file,
-            };
-            let opts = node::NodeOptions {
-                config,
-                exporter: Arc::new(export::LogExporter),
-            };
-            let runtime = node::NodeRuntime::new(opts)?;
-            runtime.run().await?;
-        }
+        // Some(Commands::Node(cmd)) => {
+        //     let config = node::NodeConfig {
+        //         iface: cmd.iface,
+        //         workers: cmd.workers,
+        //         fanout_group: cmd.fanout_group,
+        //         ring: node::RingConfig {
+        //             block_size: cmd.block_size,
+        //             block_count: cmd.block_count,
+        //             frame_size: cmd.frame_size,
+        //             block_timeout_ms: cmd.block_timeout_ms,
+        //         },
+        //         remote_whitelist: cmd.ignore_file,
+        //         local_addresslist: cmd.accept_source_file,
+        //     };
+        //     let opts = node::NodeOptions {
+        //         config,
+        //         traffic_processor: traffic_processor,
+        //     };
+        //     let runtime = node::NodeRuntime::new(opts)?;
+        //     runtime.run().await?;
+        // }
         Some(Commands::Version(_)) => {
             println!("traffic-counter {VERSION} ({GIT_DESCRIBE})");
         }

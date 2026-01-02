@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
+
 pub struct AddressList {
     ipv4: Vec<Ipv4Net>,
     ipv6: Vec<Ipv6Net>,
@@ -20,25 +21,6 @@ struct Ipv4Net {
 struct Ipv6Net {
     network: u128,
     mask: u128,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct Flow {
-    pub local_ip: IpAddr,
-    pub remote_ip: IpAddr,
-    pub local_port: u16,
-    pub remote_port: u16,
-    pub protocol: u8,
-}
-
-impl std::fmt::Display for Flow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}:{} -> {}:{} proto:{}",
-            self.local_ip, self.local_port, self.remote_ip, self.remote_port, self.protocol
-        )
-    }
 }
 
 impl AddressList {

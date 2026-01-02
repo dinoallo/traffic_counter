@@ -52,12 +52,12 @@ impl K8sInquire for K8sInquirer {
 
     async fn inquire_nodeport(&self, l4_meta: &L4Meta) -> Result<Option<SvcMeta>> {
         let client = self.client.clone();
-        lookup_nodeport(client, l4_meta.clone()).await
+        lookup_nodeport(client, *l4_meta).await
     }
 
     async fn inquire_pod_to_world(&self, l4_meta: &L4Meta) -> Result<Option<PodMeta>> {
         let client = self.client.clone();
-        lookup_pod_for_l4(client, l4_meta.clone()).await
+        lookup_pod_for_l4(client, *l4_meta).await
     }
 }
 
@@ -99,7 +99,7 @@ async fn lookup_ingress(client: Client, http: HttpMeta) -> Result<Option<SvcMeta
     Ok(None)
 }
 
-async fn lookup_nodeport(client: Client, l4: L4Meta) -> Result<Option<SvcMeta>> {
+async fn lookup_nodeport(client: Client, l4_meta: L4Meta) -> Result<Option<SvcMeta>> {
     let services: Api<Service> = Api::all(client);
     let svc_list = services
         .list(&ListParams::default())
@@ -121,11 +121,11 @@ async fn lookup_nodeport(client: Client, l4: L4Meta) -> Result<Option<SvcMeta>> 
             let Some(node_port) = port.node_port else {
                 continue;
             };
-            if (node_port as u16) != l4.local_port {
+            if (node_port as u16) != l4_meta.local_port {
                 continue;
             }
             let protocol = port.protocol.as_deref().unwrap_or("TCP");
-            if !protocol.eq_ignore_ascii_case(&l4.protocol) {
+            if !protocol_matches(protocol, l4_meta.protocol) {
                 continue;
             }
             let Some(service_name) = svc.metadata.name.clone() else {
@@ -141,13 +141,22 @@ async fn lookup_nodeport(client: Client, l4: L4Meta) -> Result<Option<SvcMeta>> 
     Ok(None)
 }
 
-async fn lookup_pod_for_l4(client: Client, l4: L4Meta) -> Result<Option<PodMeta>> {
-    let local_ip = l4.local_ip.clone();
+fn protocol_matches(k8s_proto: &str, flow_proto: u8) -> bool {
+    match (k8s_proto.to_uppercase().as_str(), flow_proto) {
+        ("TCP", 6) => true,
+        ("UDP", 17) => true,
+        ("SCTP", 132) => true,
+        _ => false,
+    }
+}
+
+async fn lookup_pod_for_l4(client: Client, l4_meta: L4Meta) -> Result<Option<PodMeta>> {
+    let local_ip = l4_meta.local_ip.to_string();
     if let Some(pod_meta) = query_pod_by_ip(client.clone(), local_ip.clone()).await? {
         return Ok(Some(pod_meta));
     }
-    let remote_ip = l4.remote_ip.clone();
-    if remote_ip.is_empty() || remote_ip == local_ip {
+    let remote_ip = l4_meta.remote_ip.to_string();
+    if remote_ip == local_ip {
         return Ok(None);
     }
     query_pod_by_ip(client, remote_ip).await
@@ -245,8 +254,8 @@ fn resource_namespace(meta: &ObjectMeta) -> String {
 #[derive(Default)]
 pub struct DummyK8sInquirer {
     ingress_by_http: HashMap<IngressKey, SvcMeta>,
-    nodeport_by_l4: HashMap<L4Key, SvcMeta>,
-    pod_to_world_by_l4: HashMap<L4Key, PodMeta>,
+    nodeport_by_l4: HashMap<L4Meta, SvcMeta>,
+    pod_to_world_by_l4: HashMap<L4Meta, PodMeta>,
 }
 
 impl DummyK8sInquirer {
@@ -260,12 +269,12 @@ impl DummyK8sInquirer {
     }
 
     pub fn register_nodeport(&mut self, l4_meta: &L4Meta, svc_meta: SvcMeta) {
-        self.nodeport_by_l4.insert(L4Key::from(l4_meta), svc_meta);
+        self.nodeport_by_l4.insert(*l4_meta, svc_meta);
     }
 
     pub fn register_pod_to_world(&mut self, l4_meta: &L4Meta, pod_meta: PodMeta) {
         self.pod_to_world_by_l4
-            .insert(L4Key::from(l4_meta), pod_meta);
+            .insert(*l4_meta, pod_meta);
     }
 }
 
@@ -279,11 +288,11 @@ impl K8sInquire for DummyK8sInquirer {
     }
 
     async fn inquire_nodeport(&self, l4_meta: &L4Meta) -> Result<Option<SvcMeta>> {
-        Ok(self.nodeport_by_l4.get(&L4Key::from(l4_meta)).cloned())
+        Ok(self.nodeport_by_l4.get(l4_meta).cloned())
     }
 
     async fn inquire_pod_to_world(&self, l4_meta: &L4Meta) -> Result<Option<PodMeta>> {
-        Ok(self.pod_to_world_by_l4.get(&L4Key::from(l4_meta)).cloned())
+        Ok(self.pod_to_world_by_l4.get(l4_meta).cloned())
     }
 }
 
@@ -300,27 +309,6 @@ impl From<&HttpMeta> for IngressKey {
             host_ip: meta.host_ip.clone(),
             client_ip: meta.client_ip.clone(),
             host: meta.host.clone(),
-        }
-    }
-}
-
-#[derive(Hash, Eq, PartialEq, Clone)]
-struct L4Key {
-    local_ip: String,
-    remote_ip: String,
-    local_port: u16,
-    remote_port: u16,
-    protocol: String,
-}
-
-impl From<&L4Meta> for L4Key {
-    fn from(meta: &L4Meta) -> Self {
-        Self {
-            local_ip: meta.local_ip.clone(),
-            remote_ip: meta.remote_ip.clone(),
-            local_port: meta.local_port,
-            remote_port: meta.remote_port,
-            protocol: meta.protocol.clone(),
         }
     }
 }
@@ -358,15 +346,15 @@ mod tests {
     #[tokio::test]
     async fn dummy_nodeport_lookup_returns_match() -> Result<()> {
         let mut dummy = DummyK8sInquirer::new();
-        let l4 = L4Meta {
-            local_ip: "10.0.0.2".to_string(),
-            remote_ip: "52.52.52.52".to_string(),
+        let l4_meta = L4Meta {
+            local_ip: "10.0.0.2".parse()?,
+            remote_ip: "52.52.52.52".parse()?,
             local_port: 32_000,
             remote_port: 443,
-            protocol: "TCP".to_string(),
+            protocol: 6,
         };
         dummy.register_nodeport(
-            &l4,
+            &l4_meta,
             SvcMeta {
                 namespace: "payments".to_string(),
                 service_name: "gateway".to_string(),
@@ -374,7 +362,7 @@ mod tests {
         );
 
         let svc = dummy
-            .inquire_nodeport(&l4)
+            .inquire_nodeport(&l4_meta)
             .await?
             .expect("expected nodeport lookup to succeed");
         assert_eq!(svc.namespace, "payments");
@@ -385,15 +373,15 @@ mod tests {
     #[tokio::test]
     async fn dummy_pod_lookup_returns_match() -> Result<()> {
         let mut dummy = DummyK8sInquirer::new();
-        let l4 = L4Meta {
-            local_ip: "172.16.0.10".to_string(),
-            remote_ip: "8.8.8.8".to_string(),
+        let l4_meta = L4Meta {
+            local_ip: "172.16.0.10".parse()?,
+            remote_ip: "8.8.8.8".parse()?,
             local_port: 8080,
             remote_port: 53,
-            protocol: "UDP".to_string(),
+            protocol: 17,
         };
         dummy.register_pod_to_world(
-            &l4,
+            &l4_meta,
             PodMeta {
                 namespace: "observability".to_string(),
                 pod_name: "pod-a".to_string(),
@@ -401,7 +389,7 @@ mod tests {
         );
 
         let pod = dummy
-            .inquire_pod_to_world(&l4)
+            .inquire_pod_to_world(&l4_meta)
             .await?
             .expect("expected pod lookup to succeed");
         assert_eq!(pod.namespace, "observability");
