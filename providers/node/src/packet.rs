@@ -11,7 +11,7 @@ use anyhow::{Context, Result, anyhow};
 use tokio::io::unix::AsyncFd;
 
 use crate::model::AddressList;
-use crate::traffic::{L4Meta, L4Traffic};
+use api::{L4Meta, L4Traffic};
 
 const ETH_P_IPV4: u16 = 0x0800;
 const ETH_P_IPV6: u16 = 0x86DD;

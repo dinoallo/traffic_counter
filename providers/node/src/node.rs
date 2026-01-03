@@ -7,16 +7,12 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use async_trait::async_trait;
 use tokio::{signal, task};
 
-use crate::factory::TrafficProcess;
 pub use crate::packet::RingConfig;
-use crate::traffic::Traffic;
 use crate::{
     model::AddressList,
     packet::{PacketSocket, validate_ring_config},
-    run::Run,
 };
 
 pub const DEFAULT_BLOCK_SIZE: u32 = 1 << 20; // 1 MiB
@@ -27,7 +23,6 @@ pub const DEFAULT_BLOCK_TIMEOUT_MS: u32 = 100;
 // NodeOptions encapsulates all internal and external options needed to run a node
 pub struct NodeOptions {
     pub config: NodeConfig,
-    pub traffic_processor: Arc<dyn TrafficProcess>,
 }
 
 // NodeConfig can be configured from CLI or other sources
@@ -36,8 +31,6 @@ pub struct NodeConfig {
     pub iface: String,
     pub workers: usize,
     pub fanout_group: Option<u16>,
-    /*     pub report_interval: Duration,
-    pub report_natural: bool, */
     pub ring: RingConfig,
     pub remote_whitelist: Option<PathBuf>,
     pub local_addresslist: Option<PathBuf>,
@@ -46,17 +39,13 @@ pub struct NodeConfig {
 #[derive(Clone)]
 pub struct NodeRuntime {
     pub config: NodeConfig,
-    traffic_processor: Arc<dyn TrafficProcess>,
     remote_whitelist: Arc<AddressList>,
     local_addresslist: Arc<AddressList>,
 }
 
 impl NodeRuntime {
     pub fn new(opts: NodeOptions) -> Result<Self> {
-        let NodeOptions {
-            config,
-            traffic_processor,
-        } = opts;
+        let NodeOptions { config } = opts;
         if config.workers == 0 {
             return Err(anyhow!("workers must be at least 1"));
         }
@@ -75,13 +64,12 @@ impl NodeRuntime {
             config,
             remote_whitelist,
             local_addresslist,
-            traffic_processor,
         })
     }
 
-    async fn run_packet_pipeline(&self, runtime: &NodeRuntime) -> Result<()> {
+    pub async fn run(&self) -> Result<()> {
         let running = Arc::new(AtomicBool::new(true));
-        let config = &runtime.config;
+        let config = &self.config;
 
         let mut handles = Vec::with_capacity(config.workers);
         for worker_id in 0..config.workers {
@@ -133,17 +121,10 @@ impl NodeRuntime {
                 &self.remote_whitelist,
                 &self.local_addresslist,
                 move |_, traffic| async move {
-                    let _ = self.traffic_processor.input(Traffic::L4(traffic)).await;
+                    //TODO: send traffic to central processor using grpc
                 },
             )
             .await
-    }
-}
-
-#[async_trait]
-impl Run for NodeRuntime {
-    async fn run(&self) -> Result<()> {
-        self.run_packet_pipeline(self).await
     }
 }
 

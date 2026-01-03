@@ -1,0 +1,20 @@
+[package]
+name = "node"
+version = "0.0.0-alpha"
+edition.workspace = true
+
+license.workspace = true
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+anyhow = { workspace = true, default-features = true }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt",
+    "rt-multi-thread",
+    "net",
+    "time",
+    "signal",
+] }
+libc = { workspace = true }
+api = { workspace = true }
