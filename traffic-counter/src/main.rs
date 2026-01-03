@@ -6,7 +6,6 @@ use run::Run;
 
 use crate::{factory::TrafficFactory, label::TrafficLabeler};
 
-mod counter;
 mod export;
 mod factory;
 mod k8s;

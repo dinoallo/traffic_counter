@@ -124,13 +124,13 @@ impl TryFrom<pb::Traffic> for Traffic {
             .kind
             .ok_or(ProtoConversionError::MissingField("traffic.kind"))?
         {
-            Kind::K8s(k8s) => Ok(Traffic::K8s(traffic::K8sTraffic::try_from(k8s)?)),
+            Kind::K8s(k8s) => Traffic::try_from(k8s),
             Kind::Unknown(_) => Ok(Traffic::Unknown),
         }
     }
 }
 
-impl TryFrom<pb::K8sTraffic> for traffic::K8sTraffic {
+impl TryFrom<pb::K8sTraffic> for Traffic {
     type Error = ProtoConversionError;
 
     fn try_from(value: pb::K8sTraffic) -> Result<Self, Self::Error> {
@@ -140,13 +140,13 @@ impl TryFrom<pb::K8sTraffic> for traffic::K8sTraffic {
             .kind
             .ok_or(ProtoConversionError::MissingField("k8s_traffic.kind"))?
         {
-            Kind::Ingress(ingress) => Ok(traffic::K8sTraffic::K8sIngress(
+            Kind::Ingress(ingress) => Ok(traffic::Traffic::K8sIngress(
                 traffic::K8sIngressTraffic::try_from(ingress)?,
             )),
-            Kind::NodePort(node_port) => Ok(traffic::K8sTraffic::K8sNodePort(
+            Kind::NodePort(node_port) => Ok(traffic::Traffic::K8sNodePort(
                 traffic::K8sNodePortTraffic::try_from(node_port)?,
             )),
-            Kind::PodToWorld(pod_to_world) => Ok(traffic::K8sTraffic::K8sPodToWorld(
+            Kind::PodToWorld(pod_to_world) => Ok(traffic::Traffic::K8sPodToWorld(
                 traffic::K8sPodToWorldTraffic::try_from(pod_to_world)?,
             )),
         }

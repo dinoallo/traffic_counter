@@ -1,6 +1,4 @@
-use crate::traffic::{
-    K8sIngressTraffic, K8sNodePortTraffic, K8sPodToWorldTraffic, K8sTraffic, Traffic,
-};
+use crate::traffic::{K8sIngressTraffic, K8sNodePortTraffic, K8sPodToWorldTraffic, Traffic};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -38,10 +36,7 @@ impl TrafficLabel<K8sIngressTraffic> for K8sTrafficLabeler {
 #[async_trait]
 impl TrafficLabel<K8sNodePortTraffic> for K8sTrafficLabeler {
     async fn label(&self, traffic: K8sNodePortTraffic) -> Result<K8sNodePortTraffic> {
-        let result = self
-            .k8s_inquirer
-            .inquire_nodeport(&traffic.l4_meta)
-            .await?;
+        let result = self.k8s_inquirer.inquire_nodeport(&traffic.l4_meta).await?;
         let Some(svc_meta) = result else {
             return Ok(traffic);
         };
@@ -77,25 +72,6 @@ impl TrafficLabel<K8sPodToWorldTraffic> for K8sTrafficLabeler {
     }
 }
 
-#[async_trait]
-impl TrafficLabel<K8sTraffic> for K8sTrafficLabeler {
-    async fn label(&self, traffic: K8sTraffic) -> Result<K8sTraffic> {
-        match traffic {
-            K8sTraffic::K8sIngress(t) => {
-                let labeled = self.label(t).await?;
-                Ok(K8sTraffic::K8sIngress(labeled))
-            }
-            K8sTraffic::K8sNodePort(t) => {
-                let labeled = self.label(t).await?;
-                Ok(K8sTraffic::K8sNodePort(labeled))
-            }
-            K8sTraffic::K8sPodToWorld(t) => {
-                let labeled = self.label(t).await?;
-                Ok(K8sTraffic::K8sPodToWorld(labeled))
-            }
-        }
-    }
-}
 pub struct K8sTrafficLabeler {
     k8s_inquirer: Arc<dyn crate::k8s::K8sInquire + Send + Sync>,
 }
@@ -108,9 +84,17 @@ pub struct TrafficLabeler {
 impl TrafficLabel<Traffic> for TrafficLabeler {
     async fn label(&self, traffic: Traffic) -> Result<Traffic> {
         match traffic {
-            Traffic::K8s(t) => {
+            Traffic::K8sIngress(t) => {
                 let labeled = self.k8s_labeler.label(t).await?;
-                Ok(Traffic::K8s(labeled))
+                Ok(Traffic::K8sIngress(labeled))
+            }
+            Traffic::K8sNodePort(t) => {
+                let labeled = self.k8s_labeler.label(t).await?;
+                Ok(Traffic::K8sNodePort(labeled))
+            }
+            Traffic::K8sPodToWorld(t) => {
+                let labeled = self.k8s_labeler.label(t).await?;
+                Ok(Traffic::K8sPodToWorld(labeled))
             }
             Traffic::L4(_) => Ok(traffic),
             Traffic::Unknown => Ok(traffic),

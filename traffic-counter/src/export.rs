@@ -6,80 +6,71 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::counter::L4CounterTable;
+use anyhow::Result;
 use chrono::Utc;
 use tokio::time;
 
+use crate::store::TrafficCount;
+
 /// Trait representing anything that can export itself into another form.
 pub trait Export: Send + Sync {
-    /// The result type returned by the export operation.
-    type Output;
-
     /// Perform the export and return the resulting value.
-    fn export(&self, table: &L4CounterTable) -> Self::Output;
+    async fn run(&self, running: Arc<AtomicBool>, interval: Duration, natural: bool) -> Result<()>;
 }
 
-#[derive(Debug, Default, Copy, Clone)]
-pub struct LogExporter;
+#[derive(Clone)]
+pub struct LogExporter {
+    traffic_counter: Arc<dyn TrafficCount>,
+}
 
 impl Export for LogExporter {
-    type Output = ();
+    async fn run(&self, running: Arc<AtomicBool>, interval: Duration, natural: bool) -> Result<()> {
+        if natural {
+            self.run_at_natural_interval(running, interval).await
+        } else {
+            self.run_at_interval(running, interval).await
+        }
+    }
+}
 
-    fn export(&self, table: &L4CounterTable) -> Self::Output {
-        let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        for shard in &table.shards {
-            let mut guard = shard.lock().expect("counter shard mutex poisoned");
-            for (l4_meta, l4_traffic) in guard.iter() {
-                println!("[{timestamp}] flow {} - counter {}", l4_meta, l4_traffic);
+impl LogExporter {
+    pub fn new(traffic_counter: Arc<dyn TrafficCount>) -> Self {
+        Self { traffic_counter }
+    }
+    async fn run_at_interval(&self, running: Arc<AtomicBool>, interval: Duration) -> Result<()> {
+        let mut ticker = time::interval(interval);
+        loop {
+            ticker.tick().await;
+            if !running.load(Ordering::Relaxed) {
+                break;
             }
-            guard.clear();
+            let timestamp = Utc::now();
+            let records = self.traffic_counter.reset();
+            for record in records {
+                println!("{} - Exported Record: {}", timestamp.to_rfc3339(), record);
+            }
         }
+        Ok(())
     }
-}
 
-pub async fn run_reporter(
-    table: Arc<L4CounterTable>,
-    running: Arc<AtomicBool>,
-    interval: Duration,
-    natural: bool,
-    exporter: Arc<dyn Export<Output = ()>>,
-) {
-    if natural {
-        run_natural_reporter(table, running, interval, exporter).await;
-    } else {
-        run_interval_reporter(table, running, interval, exporter).await;
-    }
-}
-
-async fn run_interval_reporter(
-    table: Arc<L4CounterTable>,
-    running: Arc<AtomicBool>,
-    interval: Duration,
-    exporter: Arc<dyn Export<Output = ()>>,
-) {
-    let mut ticker = time::interval(interval);
-    loop {
-        ticker.tick().await;
-        if !running.load(Ordering::Relaxed) {
-            break;
+    async fn run_at_natural_interval(
+        &self,
+        running: Arc<AtomicBool>,
+        interval: Duration,
+    ) -> Result<()> {
+        loop {
+            let wait = duration_until_next_boundary(interval);
+            time::sleep(wait).await;
+            if !running.load(Ordering::Relaxed) {
+                break;
+            }
+            let timestamp = Utc::now();
+            let records = self.traffic_counter.reset();
+            for record in records {
+                println!("{} - Exported Record: {}", timestamp.to_rfc3339(), record);
+            }
         }
-        exporter.export(table.as_ref());
-    }
-}
-
-async fn run_natural_reporter(
-    table: Arc<L4CounterTable>,
-    running: Arc<AtomicBool>,
-    interval: Duration,
-    exporter: Arc<dyn Export<Output = ()>>,
-) {
-    loop {
-        let wait = duration_until_next_boundary(interval);
-        time::sleep(wait).await;
-        if !running.load(Ordering::Relaxed) {
-            break;
-        }
-        exporter.export(table.as_ref());
+        Ok(())
     }
 }
 
