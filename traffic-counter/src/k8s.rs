@@ -1,12 +1,20 @@
 use crate::traffic::{HttpMeta, L4Meta, PodMeta, SvcMeta};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use futures::StreamExt;
 use k8s_openapi::{
     api::core::v1::{Pod, Service},
     api::networking::v1::{Ingress, IngressRule, IngressStatus},
     apimachinery::pkg::apis::meta::v1::ObjectMeta,
 };
-use kube::{Api, Client, api::ListParams};
+use kube::{
+    Api, Client,
+    runtime::{
+        WatchStreamExt,
+        reflector::{self, Store},
+        watcher,
+    },
+};
 use std::collections::HashMap;
 
 #[async_trait]
@@ -22,8 +30,11 @@ pub trait K8sInquire: Send + Sync {
     }
 }
 
+#[derive(Clone)]
 pub struct K8sInquirer {
-    client: Client,
+    ingress_store: Store<Ingress>,
+    service_store: Store<Service>,
+    pod_store: Store<Pod>,
 }
 
 impl K8sInquirer {
@@ -35,55 +46,96 @@ impl K8sInquirer {
         let client = Client::try_default()
             .await
             .context("constructing default kubernetes client")?;
-        Ok(Self { client })
+        Self::with_client(client)
     }
 
-    pub fn with_client(client: Client) -> Self {
-        Self { client }
+    pub fn with_client(client: Client) -> Result<Self> {
+        let ingress_api = Api::<Ingress>::all(client.clone());
+        let service_api = Api::<Service>::all(client.clone());
+        let pod_api = Api::<Pod>::all(client.clone());
+
+        let (ingress_store, ingress_writer) = reflector::store();
+        let (service_store, service_writer) = reflector::store();
+        let (pod_store, pod_writer) = reflector::store();
+
+        tokio::spawn(async move {
+            let stream = reflector::reflector(
+                ingress_writer,
+                watcher(ingress_api, watcher::Config::default()),
+            );
+            stream
+                .applied_objects()
+                .for_each(|_| async {
+                    // In a real app, we might log errors here
+                })
+                .await;
+        });
+
+        tokio::spawn(async move {
+            let stream = reflector::reflector(
+                service_writer,
+                watcher(service_api, watcher::Config::default()),
+            );
+            stream
+                .applied_objects()
+                .for_each(|_| async {
+                    // In a real app, we might log errors here
+                })
+                .await;
+        });
+
+        tokio::spawn(async move {
+            let stream =
+                reflector::reflector(pod_writer, watcher(pod_api, watcher::Config::default()));
+            stream
+                .applied_objects()
+                .for_each(|_| async {
+                    // In a real app, we might log errors here
+                })
+                .await;
+        });
+
+        Ok(Self {
+            ingress_store,
+            service_store,
+            pod_store,
+        })
     }
 }
 
 #[async_trait]
 impl K8sInquire for K8sInquirer {
     async fn inquire_ingress(&self, http_meta: &HttpMeta) -> Result<Option<SvcMeta>> {
-        let client = self.client.clone();
-        lookup_ingress(client, http_meta.clone()).await
+        lookup_ingress(&self.ingress_store, http_meta).await
     }
 
     async fn inquire_nodeport(&self, l4_meta: &L4Meta) -> Result<Option<SvcMeta>> {
-        let client = self.client.clone();
-        lookup_nodeport(client, *l4_meta).await
+        lookup_nodeport(&self.service_store, l4_meta).await
     }
 
     async fn inquire_pod_to_world(&self, l4_meta: &L4Meta) -> Result<Option<PodMeta>> {
-        let client = self.client.clone();
-        lookup_pod_for_l4(client, *l4_meta).await
+        lookup_pod_for_l4(&self.pod_store, l4_meta).await
     }
 }
 
-async fn lookup_ingress(client: Client, http: HttpMeta) -> Result<Option<SvcMeta>> {
+async fn lookup_ingress(store: &Store<Ingress>, http: &HttpMeta) -> Result<Option<SvcMeta>> {
     if http.host.is_empty() {
         return Ok(None);
     }
 
     let normalized_host = normalize_host(&http.host);
-    let ingresses: Api<Ingress> = Api::all(client);
-    let ingress_list = ingresses
-        .list(&ListParams::default())
-        .await
-        .with_context(|| format!("listing ingress resources for host {}", normalized_host))?;
 
-    for ingress in ingress_list.items {
+    for ingress in store.state() {
         if !ingress_status_matches_ip(ingress.status.as_ref(), &http.host_ip) {
             continue;
         }
 
         let namespace = resource_namespace(&ingress.metadata);
-        let Some(spec) = ingress.spec else {
+        let Some(spec) = &ingress.spec else {
             continue;
         };
-        let rules = spec.rules.unwrap_or_default();
-        for rule in &rules {
+        let rules = spec.rules.as_deref().unwrap_or_default();
+        for rule in rules {
             if !ingress_rule_matches_host(rule, &normalized_host) {
                 continue;
             }
@@ -99,15 +151,9 @@ async fn lookup_ingress(client: Client, http: HttpMeta) -> Result<Option<SvcMeta
     Ok(None)
 }
 
-async fn lookup_nodeport(client: Client, l4_meta: L4Meta) -> Result<Option<SvcMeta>> {
-    let services: Api<Service> = Api::all(client);
-    let svc_list = services
-        .list(&ListParams::default())
-        .await
-        .context("listing services for nodeport lookup")?;
-
-    for svc in svc_list.items {
-        let Some(spec) = svc.spec else {
+async fn lookup_nodeport(store: &Store<Service>, l4_meta: &L4Meta) -> Result<Option<SvcMeta>> {
+    for svc in store.state() {
+        let Some(spec) = &svc.spec else {
             continue;
         };
         if !matches!(
@@ -116,7 +162,7 @@ async fn lookup_nodeport(client: Client, l4_meta: L4Meta) -> Result<Option<SvcMe
         ) {
             continue;
         }
-        let ports = spec.ports.unwrap_or_default();
+        let ports = spec.ports.as_deref().unwrap_or_default();
         for port in ports {
             let Some(node_port) = port.node_port else {
                 continue;
@@ -150,39 +196,29 @@ fn protocol_matches(k8s_proto: &str, flow_proto: u8) -> bool {
     }
 }
 
-async fn lookup_pod_for_l4(client: Client, l4_meta: L4Meta) -> Result<Option<PodMeta>> {
+async fn lookup_pod_for_l4(store: &Store<Pod>, l4_meta: &L4Meta) -> Result<Option<PodMeta>> {
     let local_ip = l4_meta.local_ip.to_string();
-    if let Some(pod_meta) = query_pod_by_ip(client.clone(), local_ip.clone()).await? {
+    if let Some(pod_meta) = query_pod_by_ip(store, &local_ip).await? {
         return Ok(Some(pod_meta));
     }
     let remote_ip = l4_meta.remote_ip.to_string();
     if remote_ip == local_ip {
         return Ok(None);
     }
-    query_pod_by_ip(client, remote_ip).await
+    query_pod_by_ip(store, &remote_ip).await
 }
 
-async fn query_pod_by_ip(client: Client, ip: String) -> Result<Option<PodMeta>> {
+async fn query_pod_by_ip(store: &Store<Pod>, ip: &str) -> Result<Option<PodMeta>> {
     if ip.is_empty() {
         return Ok(None);
     }
 
-    let pods: Api<Pod> = Api::all(client);
-    let params = ListParams {
-        field_selector: Some(format!("status.podIP={ip}")),
-        ..Default::default()
-    };
-    let pod_list = pods
-        .list(&params)
-        .await
-        .with_context(|| format!("listing pods for ip {}", ip))?;
-
-    for pod in pod_list.items {
+    for pod in store.state() {
         let matches_ip = pod
             .status
             .as_ref()
             .and_then(|status| status.pod_ip.as_ref())
-            .map(|pod_ip| pod_ip == &ip)
+            .map(|pod_ip| pod_ip == ip)
             .unwrap_or(false);
         if !matches_ip {
             continue;
@@ -273,8 +309,7 @@ impl DummyK8sInquirer {
     }
 
     pub fn register_pod_to_world(&mut self, l4_meta: &L4Meta, pod_meta: PodMeta) {
-        self.pod_to_world_by_l4
-            .insert(*l4_meta, pod_meta);
+        self.pod_to_world_by_l4.insert(*l4_meta, pod_meta);
     }
 }
 
