@@ -236,7 +236,7 @@ impl PacketRing {
         let (num_pkts, mut offset) = {
             let block_ptr = unsafe { self.base.add(idx as usize * self.block_size()) };
             let desc = block_ptr as *mut libc::tpacket_block_desc;
-            let status = unsafe { (*desc).hdr.bh1.block_status };
+            let status = unsafe { ptr::read_volatile(&((*desc).hdr.bh1.block_status)) };
             if status & libc::TP_STATUS_USER == 0 {
                 return Ok(false);
             }
@@ -327,7 +327,7 @@ impl PacketRing {
             let block_ptr = unsafe { self.base.add(idx as usize * self.block_size()) };
             let desc = block_ptr as *mut libc::tpacket_block_desc;
             unsafe {
-                (*desc).hdr.bh1.block_status = libc::TP_STATUS_KERNEL;
+                ptr::write_volatile(&mut (*desc).hdr.bh1.block_status, libc::TP_STATUS_KERNEL);
             }
         }
         fence(Ordering::Release);
