@@ -1,74 +1,117 @@
-use crate::traffic::{K8sIngressTraffic, K8sNodePortTraffic, K8sPodToWorldTraffic, Traffic};
 use anyhow::Result;
+use api::{ClusterTraffic, HttpGatewayTraffic, NodePortTraffic};
 use async_trait::async_trait;
 use std::sync::Arc;
 
-#[async_trait]
-pub trait TrafficLabel<T>: Send + Sync
-where
-    T: Send + 'static,
-{
-    async fn label(&self, traffic: T) -> Result<T> {
-        Ok(traffic)
-    }
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
+pub struct ReservedPortLabel {
+    pub port: u16,
+    pub protocol: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
+pub struct K8sNodePortLabel {
+    pub namespace: String,
+    pub service_name: String,
+    // pub port_name: String,
+    // pub port_protocol: String,
+    // pub node_port: u16,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
+pub struct DynamicPortLabel {
+    pub port: u16,
+    pub protocol: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum NodePortLabel {
+    ReservedPort(ReservedPortLabel),
+    K8sNodePort(K8sNodePortLabel),
+    DynamicPort(DynamicPortLabel),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
+pub struct K8sPodLabel {
+    pub namespace: String,
+    pub pod_name: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum ClusterLabel {
+    K8sPod(K8sPodLabel),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
+pub struct K8sIngressLabel {
+    pub namespace: String,
+    pub service_name: String,
+    pub host: String,
+    // pub path: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum HttpGatewayLabel {
+    K8sIngress(K8sIngressLabel),
 }
 
 #[async_trait]
-impl TrafficLabel<K8sIngressTraffic> for K8sTrafficLabeler {
-    async fn label(&self, traffic: K8sIngressTraffic) -> Result<K8sIngressTraffic> {
+pub trait TrafficLabel<T, L>: Send + Sync
+where
+    T: Send + 'static,
+{
+    async fn label(&self, traffic: T) -> Result<Option<L>>;
+}
+
+#[async_trait]
+impl TrafficLabel<HttpGatewayTraffic, HttpGatewayLabel> for K8sTrafficLabeler {
+    async fn label(&self, traffic: HttpGatewayTraffic) -> Result<Option<HttpGatewayLabel>> {
         let result = self
             .k8s_inquirer
             .inquire_ingress(&traffic.http_meta)
             .await?;
         let Some(svc_meta) = result else {
-            return Ok(traffic);
+            return Ok(None);
         };
-        let labeled_traffic = K8sIngressTraffic {
-            http_meta: traffic.http_meta,
-            svc_meta,
-            request_bytes: traffic.request_bytes,
-            response_bytes: traffic.response_bytes,
-        };
-        Ok(labeled_traffic)
+        let l = HttpGatewayLabel::K8sIngress(K8sIngressLabel {
+            namespace: svc_meta.namespace,
+            service_name: svc_meta.service_name,
+            host: traffic.http_meta.host,
+        });
+        Ok(Some(l))
     }
 }
 
 #[async_trait]
-impl TrafficLabel<K8sNodePortTraffic> for K8sTrafficLabeler {
-    async fn label(&self, traffic: K8sNodePortTraffic) -> Result<K8sNodePortTraffic> {
+impl TrafficLabel<NodePortTraffic, NodePortLabel> for K8sTrafficLabeler {
+    async fn label(&self, traffic: NodePortTraffic) -> Result<Option<NodePortLabel>> {
         let result = self.k8s_inquirer.inquire_nodeport(&traffic.l4_meta).await?;
         let Some(svc_meta) = result else {
-            return Ok(traffic);
+            return Ok(None);
         };
-        Ok(K8sNodePortTraffic {
-            l4_meta: traffic.l4_meta,
-            svc_meta,
-            rx_bytes: traffic.rx_bytes,
-            rx_packets: traffic.rx_packets,
-            tx_bytes: traffic.tx_bytes,
-            tx_packets: traffic.tx_packets,
-        })
+        let l = NodePortLabel::K8sNodePort(K8sNodePortLabel {
+            namespace: svc_meta.namespace,
+            service_name: svc_meta.service_name,
+        });
+        Ok(Some(l))
     }
 }
 
 #[async_trait]
-impl TrafficLabel<K8sPodToWorldTraffic> for K8sTrafficLabeler {
-    async fn label(&self, traffic: K8sPodToWorldTraffic) -> Result<K8sPodToWorldTraffic> {
+impl TrafficLabel<ClusterTraffic, ClusterLabel> for K8sTrafficLabeler {
+    async fn label(&self, traffic: ClusterTraffic) -> Result<Option<ClusterLabel>> {
         let result = self
             .k8s_inquirer
             .inquire_pod_to_world(&traffic.l4_meta)
             .await?;
         let Some(pod_meta) = result else {
-            return Ok(traffic);
+            return Ok(None);
         };
-        Ok(K8sPodToWorldTraffic {
-            l4_meta: traffic.l4_meta,
-            pod_meta,
-            rx_bytes: traffic.rx_bytes,
-            rx_packets: traffic.rx_packets,
-            tx_bytes: traffic.tx_bytes,
-            tx_packets: traffic.tx_packets,
-        })
+        let l = ClusterLabel::K8sPod(K8sPodLabel {
+            namespace: pod_meta.namespace,
+            pod_name: pod_meta.pod_name,
+        });
+        Ok(Some(l))
     }
 }
 
@@ -78,26 +121,4 @@ pub struct K8sTrafficLabeler {
 
 pub struct TrafficLabeler {
     pub k8s_labeler: K8sTrafficLabeler,
-}
-
-#[async_trait]
-impl TrafficLabel<Traffic> for TrafficLabeler {
-    async fn label(&self, traffic: Traffic) -> Result<Traffic> {
-        match traffic {
-            Traffic::K8sIngress(t) => {
-                let labeled = self.k8s_labeler.label(t).await?;
-                Ok(Traffic::K8sIngress(labeled))
-            }
-            Traffic::K8sNodePort(t) => {
-                let labeled = self.k8s_labeler.label(t).await?;
-                Ok(Traffic::K8sNodePort(labeled))
-            }
-            Traffic::K8sPodToWorld(t) => {
-                let labeled = self.k8s_labeler.label(t).await?;
-                Ok(Traffic::K8sPodToWorld(labeled))
-            }
-            Traffic::L4(_) => Ok(traffic),
-            Traffic::Unknown => Ok(traffic),
-        }
-    }
 }

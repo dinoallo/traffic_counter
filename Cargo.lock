@@ -2166,6 +2166,7 @@ name = "traffic-counter"
 version = "0.0.0-alpha"
 dependencies = [
  "anyhow",
+ "api",
  "async-trait",
  "aya",
  "aya-build",

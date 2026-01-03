@@ -7,10 +7,8 @@ mod export;
 mod factory;
 mod k8s;
 mod label;
-mod run;
 mod serve;
 mod store;
-mod traffic;
 
 const VERSION: &str = env!("TRAFFIC_COUNTER_VERSION");
 const GIT_DESCRIBE: &str = match option_env!("TRAFFIC_COUNTER_GIT_DESC") {

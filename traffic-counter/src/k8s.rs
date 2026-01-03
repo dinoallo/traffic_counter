@@ -1,5 +1,5 @@
-use crate::traffic::{HttpMeta, L4Meta, PodMeta, SvcMeta};
 use anyhow::{Context, Result};
+use api::{HttpMeta, L4Meta};
 use async_trait::async_trait;
 use futures::StreamExt;
 use k8s_openapi::{
@@ -17,6 +17,16 @@ use kube::{
 };
 use std::collections::HashMap;
 
+#[derive(Clone, Debug)]
+pub struct SvcMeta {
+    pub namespace: String,
+    pub service_name: String,
+}
+#[derive(Clone, Debug)]
+pub struct PodMeta {
+    pub namespace: String,
+    pub pod_name: String,
+}
 #[async_trait]
 pub trait K8sInquire: Send + Sync {
     async fn inquire_ingress(&self, _http_meta: &HttpMeta) -> Result<Option<SvcMeta>> {

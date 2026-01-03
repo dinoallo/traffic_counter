@@ -11,7 +11,7 @@ use anyhow::{Context, Result, anyhow};
 use tokio::io::unix::AsyncFd;
 
 use crate::model::AddressList;
-use api::{L4Meta, L4Traffic};
+use api::{L4Meta, NodePortTraffic};
 
 const ETH_P_IPV4: u16 = 0x0800;
 const ETH_P_IPV6: u16 = 0x86DD;
@@ -94,7 +94,7 @@ impl PacketSocket {
         mut on_traffic: F,
     ) -> Result<()>
     where
-        F: FnMut(L4Meta, L4Traffic) -> Fut + Send,
+        F: FnMut(L4Meta, NodePortTraffic) -> Fut + Send,
         Fut: std::future::Future<Output = ()> + Send,
     {
         let block_nr = self.ring.block_count() as usize;
@@ -211,7 +211,7 @@ impl PacketRing {
         on_traffic: &mut F,
     ) -> Result<bool>
     where
-        F: FnMut(L4Meta, L4Traffic) -> Fut,
+        F: FnMut(L4Meta, NodePortTraffic) -> Fut,
         Fut: std::future::Future<Output = ()>,
     {
         let idx = self.current_block;
@@ -228,7 +228,7 @@ impl PacketRing {
         on_traffic: &mut F,
     ) -> Result<bool>
     where
-        F: FnMut(L4Meta, L4Traffic) -> Fut,
+        F: FnMut(L4Meta, NodePortTraffic) -> Fut,
         Fut: std::future::Future<Output = ()>,
     {
         // 1. Check status and get loop bounds.
@@ -289,7 +289,7 @@ impl PacketRing {
                             if let Some(l4_meta) = extract_l4_meta(data) {
                                 let bytes = packet_len as u64;
                                 let packets = 1;
-                                let traffic = L4Traffic {
+                                let traffic = NodePortTraffic {
                                     l4_meta,
                                     rx_bytes: 0,
                                     rx_packets: 0,

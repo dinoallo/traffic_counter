@@ -10,7 +10,7 @@ use anyhow::Result;
 use chrono::Utc;
 use tokio::time;
 
-use crate::store::TrafficCount;
+use crate::store::TrafficDump;
 
 /// Trait representing anything that can export itself into another form.
 pub trait Export: Send + Sync {
@@ -20,7 +20,7 @@ pub trait Export: Send + Sync {
 
 #[derive(Clone)]
 pub struct LogExporter {
-    traffic_counter: Arc<dyn TrafficCount>,
+    traffic_dumper: Arc<dyn TrafficDump>,
 }
 
 impl Export for LogExporter {
@@ -34,8 +34,8 @@ impl Export for LogExporter {
 }
 
 impl LogExporter {
-    pub fn new(traffic_counter: Arc<dyn TrafficCount>) -> Self {
-        Self { traffic_counter }
+    pub fn new(traffic_dumper: Arc<dyn TrafficDump>) -> Self {
+        Self { traffic_dumper }
     }
     async fn run_at_interval(&self, running: Arc<AtomicBool>, interval: Duration) -> Result<()> {
         let mut ticker = time::interval(interval);
@@ -45,7 +45,7 @@ impl LogExporter {
                 break;
             }
             let timestamp = Utc::now();
-            let records = self.traffic_counter.reset();
+            let records = self.traffic_dumper.dump();
             for record in records {
                 println!("{} - Exported Record: {}", timestamp.to_rfc3339(), record);
             }
@@ -65,7 +65,7 @@ impl LogExporter {
                 break;
             }
             let timestamp = Utc::now();
-            let records = self.traffic_counter.reset();
+            let records = self.traffic_dumper.dump();
             for record in records {
                 println!("{} - Exported Record: {}", timestamp.to_rfc3339(), record);
             }

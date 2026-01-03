@@ -1,5 +1,7 @@
-use crate::{label::TrafficLabel, label::TrafficLabeler, traffic::Traffic};
+use crate::label::{ClusterLabel, HttpGatewayLabel, NodePortLabel, TrafficLabel, TrafficLabeler};
+use crate::store::{TrafficAggregate, TrafficCounter};
 use anyhow::{Result, anyhow};
+use api::Traffic;
 use async_trait::async_trait;
 use std::sync::{
     Arc,
@@ -23,9 +25,6 @@ pub trait TrafficProcess: Send + Sync {
     /// producers and perform minimal work before returning.
     async fn input(&self, traffic: Traffic) -> Result<()>;
 
-    /// Emit the next processed traffic item, waiting until one is available.
-    async fn output(&self) -> Result<Traffic>;
-
     async fn start_processing(&self) -> Result<()>;
 }
 
@@ -33,25 +32,22 @@ pub trait TrafficProcess: Send + Sync {
 pub struct TrafficFactory {
     sender: mpsc::UnboundedSender<Traffic>,
     ingress: Mutex<Option<mpsc::UnboundedReceiver<Traffic>>>,
-    receiver: Mutex<mpsc::UnboundedReceiver<Traffic>>,
-    egress_sender: mpsc::UnboundedSender<Traffic>,
-    labeler: Arc<TrafficLabeler>,
     started: AtomicBool,
+    labeler: Arc<TrafficLabeler>,
+    aggregator: Arc<TrafficCounter>,
 }
 
 impl TrafficFactory {
     /// Create a factory backed by unbounded channels so producers never block.
-    pub fn new(labeler: Arc<TrafficLabeler>) -> Self {
+    pub fn new(labeler: Arc<TrafficLabeler>, aggregator: Arc<TrafficCounter>) -> Self {
         let (ingress_tx, ingress_rx) = mpsc::unbounded_channel();
-        let (egress_tx, egress_rx) = mpsc::unbounded_channel();
 
         Self {
             sender: ingress_tx,
             ingress: Mutex::new(Some(ingress_rx)),
-            receiver: Mutex::new(egress_rx),
-            egress_sender: egress_tx,
-            labeler,
             started: AtomicBool::new(false),
+            labeler,
+            aggregator,
         }
     }
 }
@@ -87,14 +83,6 @@ impl TrafficProcess for TrafficFactory {
             .map_err(|err| anyhow!("failed to enqueue traffic: {err}"))
     }
 
-    async fn output(&self) -> Result<Traffic> {
-        let mut receiver = self.receiver.lock().await;
-        receiver
-            .recv()
-            .await
-            .ok_or_else(|| anyhow!("traffic channel closed"))
-    }
-
     async fn start_processing(&self) -> Result<()> {
         if self.started.swap(true, Ordering::SeqCst) {
             return Ok(());
@@ -106,20 +94,28 @@ impl TrafficProcess for TrafficFactory {
         };
         drop(ingress_guard);
 
-        let labeler = Arc::clone(&self.labeler);
-        let egress_tx = self.egress_sender.clone();
+        let labeler = self.labeler.clone();
+        let aggregator = self.aggregator.clone();
 
         task::spawn(async move {
             while let Some(traffic) = ingress_rx.recv().await {
-                match labeler.label(traffic).await {
-                    Ok(labeled) => {
-                        if egress_tx.send(labeled).is_err() {
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        warn!("failed to label traffic: {err:?}");
-                    }
+                match traffic {
+                    Traffic::NodePort(t) => match labeler.k8s_labeler.label(t.clone()).await {
+                        Ok(Some(label)) => aggregator.aggregate(label, t),
+                        Ok(None) => {}
+                        Err(err) => warn!("failed to label nodeport traffic: {err:?}"),
+                    },
+                    Traffic::HttpGateway(t) => match labeler.k8s_labeler.label(t.clone()).await {
+                        Ok(Some(label)) => aggregator.aggregate(label, t),
+                        Ok(None) => {}
+                        Err(err) => warn!("failed to label http gateway traffic: {err:?}"),
+                    },
+                    Traffic::Cluster(t) => match labeler.k8s_labeler.label(t.clone()).await {
+                        Ok(Some(label)) => aggregator.aggregate(label, t),
+                        Ok(None) => {}
+                        Err(err) => warn!("failed to label cluster traffic: {err:?}"),
+                    },
+                    _ => {}
                 }
             }
         });
@@ -137,18 +133,6 @@ impl TrafficProcess for DummyTrafficFactory {
         drop(buffer);
         self.notify.notify_one();
         Ok(())
-    }
-
-    async fn output(&self) -> Result<Traffic> {
-        loop {
-            if let Some(item) = {
-                let mut buffer = self.buffer.lock().await;
-                buffer.pop_front()
-            } {
-                return Ok(item);
-            }
-            self.notify.notified().await;
-        }
     }
 
     async fn start_processing(&self) -> Result<()> {

@@ -1,13 +1,13 @@
+use api::{
+    Aggregatable, ClusterTraffic, HttpGatewayTraffic, HttpMeta, L4Meta, NodePortTraffic, Traffic,
+};
 use std::{
     collections::{HashMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     sync::Mutex,
 };
 
-use crate::traffic::{
-    Aggregatable, HttpMeta, K8sIngressTraffic, K8sNodePortTraffic, K8sPodToWorldTraffic, L4Meta,
-    L4Traffic, Traffic,
-};
+use crate::label::{ClusterLabel, HttpGatewayLabel, NodePortLabel};
 
 pub const COUNTER_SHARDS: usize = 64;
 
@@ -61,68 +61,61 @@ where
     }
 }
 
-pub trait TrafficCount: Send + Sync {
-    fn aggregate(&self, traffic: Traffic);
-    fn reset(&self) -> Vec<Traffic>;
+pub trait TrafficAggregate<L, T>: Send + Sync {
+    fn aggregate(&self, label: L, traffic: T);
+}
+
+pub trait TrafficDump: Send + Sync {
+    fn dump(&self) -> Vec<Traffic>;
 }
 
 #[derive(Default)]
 pub struct TrafficCounter {
-    k8s_ingress_table: CounterTable<HttpMeta, K8sIngressTraffic>,
-    k8s_nodeport_table: CounterTable<L4Meta, K8sNodePortTraffic>,
-    k8s_pod_to_world_table: CounterTable<L4Meta, K8sPodToWorldTraffic>,
-    l4_table: CounterTable<L4Meta, L4Traffic>,
+    nodeport_traffic_table: CounterTable<NodePortLabel, NodePortTraffic>,
+    http_gateway_traffic_table: CounterTable<HttpGatewayLabel, HttpGatewayTraffic>,
+    cluster_traffic_table: CounterTable<ClusterLabel, ClusterTraffic>,
 }
 
-impl TrafficCount for TrafficCounter {
-    fn aggregate(&self, traffic: Traffic) {
-        match traffic {
-            Traffic::K8sIngress(ingress) => {
-                self.k8s_ingress_table
-                    .aggregate(ingress.http_meta.clone(), ingress);
-            }
-            Traffic::K8sNodePort(nodeport) => {
-                self.k8s_nodeport_table
-                    .aggregate(nodeport.l4_meta.clone(), nodeport);
-            }
-            Traffic::K8sPodToWorld(pod_to_world) => {
-                self.k8s_pod_to_world_table
-                    .aggregate(pod_to_world.l4_meta.clone(), pod_to_world);
-            }
-            Traffic::L4(l4) => {
-                self.l4_table.aggregate(l4.l4_meta.clone(), l4);
-            }
-            _ => {}
-        }
+impl TrafficAggregate<NodePortLabel, NodePortTraffic> for TrafficCounter {
+    fn aggregate(&self, label: NodePortLabel, traffic: NodePortTraffic) {
+        self.nodeport_traffic_table.aggregate(label, traffic);
     }
-    fn reset(&self) -> Vec<Traffic> {
+}
+
+impl TrafficAggregate<HttpGatewayLabel, HttpGatewayTraffic> for TrafficCounter {
+    fn aggregate(&self, label: HttpGatewayLabel, traffic: HttpGatewayTraffic) {
+        self.http_gateway_traffic_table.aggregate(label, traffic);
+    }
+}
+
+impl TrafficAggregate<ClusterLabel, ClusterTraffic> for TrafficCounter {
+    fn aggregate(&self, label: ClusterLabel, traffic: ClusterTraffic) {
+        self.cluster_traffic_table.aggregate(label, traffic);
+    }
+}
+
+impl TrafficDump for TrafficCounter {
+    fn dump(&self) -> Vec<Traffic> {
         let mut results = Vec::new();
 
-        for shard in &self.k8s_ingress_table.shards {
+        for shard in &self.nodeport_traffic_table.shards {
             let mut guard = shard.lock().expect("CounterTable shard mutex poisoned");
             for (_, value) in guard.drain() {
-                results.push(Traffic::K8sIngress(value));
+                results.push(Traffic::NodePort(value));
             }
         }
 
-        for shard in &self.k8s_nodeport_table.shards {
+        for shard in &self.http_gateway_traffic_table.shards {
             let mut guard = shard.lock().expect("CounterTable shard mutex poisoned");
             for (_, value) in guard.drain() {
-                results.push(Traffic::K8sNodePort(value));
+                results.push(Traffic::HttpGateway(value));
             }
         }
 
-        for shard in &self.k8s_pod_to_world_table.shards {
+        for shard in &self.cluster_traffic_table.shards {
             let mut guard = shard.lock().expect("CounterTable shard mutex poisoned");
             for (_, value) in guard.drain() {
-                results.push(Traffic::K8sPodToWorld(value));
-            }
-        }
-
-        for shard in &self.l4_table.shards {
-            let mut guard = shard.lock().expect("CounterTable shard mutex poisoned");
-            for (_, value) in guard.drain() {
-                results.push(Traffic::L4(value));
+                results.push(Traffic::Cluster(value));
             }
         }
 
