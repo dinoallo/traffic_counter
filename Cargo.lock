@@ -1173,6 +1173,7 @@ dependencies = [
  "clap",
  "libc",
  "tokio",
+ "tokio-stream",
  "tonic",
 ]
 

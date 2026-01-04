@@ -4,10 +4,13 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow};
-use tokio::{signal, task};
+use tokio::sync::mpsc;
+use tokio::{signal, task, time};
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 
 use api::proto::trafficcounter::v1::{
@@ -129,22 +132,62 @@ impl NodeRuntime {
         let mut socket = PacketSocket::bind(&iface, fanout_group, ring_cfg)
             .with_context(|| format!("worker {worker_id}: failed to bind packet socket"))?;
 
+        let (stable_tx, mut stable_rx) = mpsc::channel::<IngestTrafficRequest>(1024);
+
+        // Connection Manager Task
+        let manager_client = client.clone();
+        task::spawn(async move {
+            let client = manager_client;
+            loop {
+                // Create ephemeral channel for the new stream
+                let (stream_tx, stream_rx) = mpsc::channel(1024);
+                let request_stream = ReceiverStream::new(stream_rx);
+
+                let mut client_clone = client.clone();
+                // Spawn the actual gRPC call
+                let grpc_handle =
+                    task::spawn(async move { client_clone.ingest_traffic(request_stream).await });
+
+                // Forwarding loop: stable -> ephemeral
+                loop {
+                    let req = match stable_rx.recv().await {
+                        Some(r) => r,
+                        None => return, // Stable channel closed, worker shutting down
+                    };
+
+                    if stream_tx.send(req).await.is_err() {
+                        eprintln!("Worker {worker_id}: gRPC stream broken, reconnecting...");
+                        break; // Ephemeral channel closed (gRPC failed/ended)
+                    }
+                }
+
+                // If we broke out, wait for the gRPC task to finish (it probably errored)
+                let _ = grpc_handle.await;
+
+                // Backoff before reconnecting
+                time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+
+        // Pump loop writes to stable_tx
         socket
             .pump(
                 &running,
                 &self.remote_whitelist,
                 &self.local_addresslist,
                 move |_, traffic| {
-                    let mut client = client.clone();
+                    let tx = stable_tx.clone();
                     async move {
                         let req = IngestTrafficRequest {
                             traffic: Some(api::Traffic::NodePort(traffic).into()),
                         };
-                        // TODO: Batching or fire-and-forget to avoid stalling the pump loop too much?
-                        // For now, we await. pump calls this in a loop.
-                        // If gRPC is slow, packet capture will drop packets.
-                        if let Err(e) = client.ingest_traffic(req).await {
-                            eprintln!("Failed to ingest traffic: {e}");
+                        // We push to the stable buffer. If it's full (e.g. gRPC down and buffer full),
+                        // this will backpressure (wait).
+                        // If we wanted to drop packets when full, we'd use try_send.
+                        // Here we await, effectively pausing capture if downstream is blocked.
+                        if let Err(_) = tx.send(req).await {
+                            // Stable receiver closed (shouldn't happen unless manager task panics)
+                            eprintln!("Worker {worker_id}: Stable channel closed unexpectedly");
                         }
                     }
                 },
@@ -159,4 +202,3 @@ struct WorkerContext {
     ring_cfg: RingConfig,
     client: TrafficIngestorClient<Channel>,
 }
-

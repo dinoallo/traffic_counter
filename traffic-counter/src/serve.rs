@@ -77,19 +77,22 @@ where
 {
     async fn ingest_traffic(
         &self,
-        request: Request<pb::IngestTrafficRequest>,
+        request: Request<tonic::Streaming<pb::IngestTrafficRequest>>,
     ) -> Result<Response<pb::IngestTrafficResponse>, Status> {
-        let pb_request = request.into_inner();
-        let traffic = pb_request
-            .traffic
-            .ok_or(ProtoConversionError::MissingField("traffic"))
-            .and_then(Traffic::try_from)
-            .map_err(|err| Status::invalid_argument(err.to_string()))?;
+        let mut stream = request.into_inner();
 
-        self.process
-            .input(traffic)
-            .await
-            .map_err(|err| Status::internal(format!("failed to enqueue traffic: {err}")))?;
+        while let Some(pb_request) = stream.message().await? {
+            let traffic = pb_request
+                .traffic
+                .ok_or(ProtoConversionError::MissingField("traffic"))
+                .and_then(Traffic::try_from)
+                .map_err(|err| Status::invalid_argument(err.to_string()))?;
+
+            self.process
+                .input(traffic)
+                .await
+                .map_err(|err| Status::internal(format!("failed to enqueue traffic: {err}")))?;
+        }
 
         Ok(Response::new(pb::IngestTrafficResponse {}))
     }

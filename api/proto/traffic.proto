@@ -53,5 +53,5 @@ message IngestTrafficRequest {
 message IngestTrafficResponse {}
 
 service TrafficIngestor {
-  rpc IngestTraffic(IngestTrafficRequest) returns (IngestTrafficResponse);
+  rpc IngestTraffic(stream IngestTrafficRequest) returns (IngestTrafficResponse);
 }
