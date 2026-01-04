@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use export::Export;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 mod export;
 mod factory;
@@ -49,6 +50,10 @@ struct RunArgs {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::from_default_env()) // Reads RUST_LOG
+        .init();
     if let Err(err) = run().await {
         eprintln!("traffic-counter error: {err:?}");
         exit(1);

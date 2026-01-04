@@ -101,10 +101,7 @@ impl TrafficProcess for TrafficFactory {
             while let Some(traffic) = ingress_rx.recv().await {
                 match traffic {
                     Traffic::NodePort(t) => match labeler.label(&t).await {
-                        Ok(Some(label)) => {
-                            info!("labeled and aggregated nodeport traffic: {label:?}");
-                            aggregator.aggregate(label, t);
-                        }
+                        Ok(Some(label)) => aggregator.aggregate(label, t),
                         Ok(None) => {}
                         Err(err) => warn!("failed to label nodeport traffic: {err:?}"),
                     },
