@@ -4,18 +4,18 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use k8s_openapi::{
     api::core::v1::{Pod, Service},
-    api::networking::v1::{Ingress, IngressRule, IngressStatus},
+    api::networking::v1::{Ingress, IngressRule},
     apimachinery::pkg::apis::meta::v1::ObjectMeta,
 };
 use kube::{
     Api, Client,
     runtime::{
-        WatchStreamExt,
         reflector::{self, Store},
         watcher,
     },
 };
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug)]
 pub struct SvcMeta {
@@ -27,6 +27,37 @@ pub struct PodMeta {
     pub namespace: String,
     pub pod_name: String,
 }
+
+#[derive(Default)]
+struct PodIndex {
+    by_ip: HashMap<String, PodMeta>,
+}
+
+#[derive(Default)]
+struct ServiceIndex {
+    // NodePort -> List of services (handling protocol collisions or same port multiple protocols)
+    by_nodeport: HashMap<u16, Vec<ServicePortEntry>>,
+}
+
+#[derive(Clone)]
+struct ServicePortEntry {
+    protocol: String,
+    meta: SvcMeta,
+}
+
+#[derive(Default)]
+struct IngressIndex {
+    // Host -> List of entries
+    by_host: HashMap<String, Vec<IngressEntry>>,
+}
+
+#[derive(Clone)]
+struct IngressEntry {
+    ips: Vec<String>,
+    service_name: String,
+    namespace: String,
+}
+
 #[async_trait]
 pub trait K8sInquire: Send + Sync {
     async fn inquire_ingress(&self, _http_meta: &HttpMeta) -> Result<Option<SvcMeta>> {
@@ -42,9 +73,15 @@ pub trait K8sInquire: Send + Sync {
 
 #[derive(Clone)]
 pub struct K8sInquirer {
-    ingress_store: Store<Ingress>,
-    service_store: Store<Service>,
-    pod_store: Store<Pod>,
+    // We keep stores to ensure reflector keeps them updated, though we use indexes for lookup.
+    // The reflector stream drives the store update.
+    _ingress_store: Store<Ingress>,
+    _service_store: Store<Service>,
+    _pod_store: Store<Pod>,
+
+    ingress_index: Arc<RwLock<IngressIndex>>,
+    service_index: Arc<RwLock<ServiceIndex>>,
+    pod_index: Arc<RwLock<PodIndex>>,
 }
 
 impl K8sInquirer {
@@ -68,47 +105,69 @@ impl K8sInquirer {
         let (service_store, service_writer) = reflector::store();
         let (pod_store, pod_writer) = reflector::store();
 
-        tokio::spawn(async move {
-            let stream = reflector::reflector(
-                ingress_writer,
-                watcher(ingress_api, watcher::Config::default()),
-            );
-            stream
-                .applied_objects()
-                .for_each(|_| async {
-                    // In a real app, we might log errors here
-                })
-                .await;
-        });
+        let ingress_index = Arc::new(RwLock::new(IngressIndex::default()));
+        let service_index = Arc::new(RwLock::new(ServiceIndex::default()));
+        let pod_index = Arc::new(RwLock::new(PodIndex::default()));
 
-        tokio::spawn(async move {
-            let stream = reflector::reflector(
-                service_writer,
-                watcher(service_api, watcher::Config::default()),
-            );
-            stream
-                .applied_objects()
-                .for_each(|_| async {
-                    // In a real app, we might log errors here
-                })
-                .await;
-        });
+        // Ingress Watcher
+        {
+            let store = ingress_store.clone();
+            let index = ingress_index.clone();
+            tokio::spawn(async move {
+                let mut stream = reflector::reflector(
+                    ingress_writer,
+                    watcher(ingress_api, watcher::Config::default()),
+                )
+                .boxed();
+                while let Some(event) = stream.next().await {
+                    if event.is_ok() {
+                        rebuild_ingress_index(&store, &index);
+                    }
+                }
+            });
+        }
 
-        tokio::spawn(async move {
-            let stream =
-                reflector::reflector(pod_writer, watcher(pod_api, watcher::Config::default()));
-            stream
-                .applied_objects()
-                .for_each(|_| async {
-                    // In a real app, we might log errors here
-                })
-                .await;
-        });
+        // Service Watcher
+        {
+            let store = service_store.clone();
+            let index = service_index.clone();
+            tokio::spawn(async move {
+                let mut stream = reflector::reflector(
+                    service_writer,
+                    watcher(service_api, watcher::Config::default()),
+                )
+                .boxed();
+                while let Some(event) = stream.next().await {
+                    if event.is_ok() {
+                        rebuild_service_index(&store, &index);
+                    }
+                }
+            });
+        }
+
+        // Pod Watcher
+        {
+            let store = pod_store.clone();
+            let index = pod_index.clone();
+            tokio::spawn(async move {
+                let mut stream =
+                    reflector::reflector(pod_writer, watcher(pod_api, watcher::Config::default()))
+                        .boxed();
+                while let Some(event) = stream.next().await {
+                    if event.is_ok() {
+                        rebuild_pod_index(&store, &index);
+                    }
+                }
+            });
+        }
 
         Ok(Self {
-            ingress_store,
-            service_store,
-            pod_store,
+            _ingress_store: ingress_store,
+            _service_store: service_store,
+            _pod_store: pod_store,
+            ingress_index,
+            service_index,
+            pod_index,
         })
     }
 }
@@ -116,85 +175,157 @@ impl K8sInquirer {
 #[async_trait]
 impl K8sInquire for K8sInquirer {
     async fn inquire_ingress(&self, http_meta: &HttpMeta) -> Result<Option<SvcMeta>> {
-        lookup_ingress(&self.ingress_store, http_meta).await
+        if http_meta.host.is_empty() {
+            return Ok(None);
+        }
+        let normalized_host = normalize_host(&http_meta.host);
+
+        let index = self.ingress_index.read().unwrap();
+        if let Some(entries) = index.by_host.get(&normalized_host) {
+            for entry in entries {
+                // Check IP match
+                // If target_ip is empty, match. Else check if present.
+                if http_meta.host_ip.is_empty()
+                    || entry.ips.iter().any(|ip| ip == &http_meta.host_ip)
+                {
+                    return Ok(Some(SvcMeta {
+                        namespace: entry.namespace.clone(),
+                        service_name: entry.service_name.clone(),
+                    }));
+                }
+            }
+        }
+        Ok(None)
     }
 
     async fn inquire_nodeport(&self, l4_meta: &L4Meta) -> Result<Option<SvcMeta>> {
-        lookup_nodeport(&self.service_store, l4_meta).await
+        let index = self.service_index.read().unwrap();
+        if let Some(entries) = index.by_nodeport.get(&l4_meta.local_port) {
+            for entry in entries {
+                if protocol_matches(&entry.protocol, l4_meta.protocol) {
+                    return Ok(Some(entry.meta.clone()));
+                }
+            }
+        }
+        Ok(None)
     }
 
     async fn inquire_pod_to_world(&self, l4_meta: &L4Meta) -> Result<Option<PodMeta>> {
-        lookup_pod_for_l4(&self.pod_store, l4_meta).await
+        let index = self.pod_index.read().unwrap();
+        let local_ip = l4_meta.local_ip.to_string();
+        if let Some(meta) = index.by_ip.get(&local_ip) {
+            return Ok(Some(meta.clone()));
+        }
+        let remote_ip = l4_meta.remote_ip.to_string();
+        if remote_ip != local_ip {
+            if let Some(meta) = index.by_ip.get(&remote_ip) {
+                return Ok(Some(meta.clone()));
+            }
+        }
+        Ok(None)
     }
 }
 
-async fn lookup_ingress(store: &Store<Ingress>, http: &HttpMeta) -> Result<Option<SvcMeta>> {
-    if http.host.is_empty() {
-        return Ok(None);
-    }
-
-    let normalized_host = normalize_host(&http.host);
-
+fn rebuild_ingress_index(store: &Store<Ingress>, index: &Arc<RwLock<IngressIndex>>) {
+    let mut map: HashMap<String, Vec<IngressEntry>> = HashMap::new();
     for ingress in store.state() {
-        if !ingress_status_matches_ip(ingress.status.as_ref(), &http.host_ip) {
-            continue;
-        }
-
         let namespace = resource_namespace(&ingress.metadata);
-        let Some(spec) = &ingress.spec else {
-            continue;
-        };
-        let rules = spec.rules.as_deref().unwrap_or_default();
-        for rule in rules {
-            if !ingress_rule_matches_host(rule, &normalized_host) {
-                continue;
-            }
-            if let Some(service_name) = first_backend_service_name(rule) {
-                return Ok(Some(SvcMeta {
-                    namespace: namespace.clone(),
-                    service_name,
-                }));
+        let ips = get_ingress_ips(&ingress);
+
+        if let Some(spec) = &ingress.spec {
+            if let Some(rules) = &spec.rules {
+                for rule in rules {
+                    if let Some(host) = &rule.host {
+                        let normalized = normalize_host(host);
+                        if let Some(service_name) = first_backend_service_name(rule) {
+                            let entry = IngressEntry {
+                                ips: ips.clone(),
+                                namespace: namespace.clone(),
+                                service_name,
+                            };
+                            map.entry(normalized).or_default().push(entry);
+                        }
+                    }
+                }
             }
         }
     }
-
-    Ok(None)
+    if let Ok(mut guard) = index.write() {
+        guard.by_host = map;
+    }
 }
 
-async fn lookup_nodeport(store: &Store<Service>, l4_meta: &L4Meta) -> Result<Option<SvcMeta>> {
+fn rebuild_service_index(store: &Store<Service>, index: &Arc<RwLock<ServiceIndex>>) {
+    let mut map: HashMap<u16, Vec<ServicePortEntry>> = HashMap::new();
     for svc in store.state() {
-        let Some(spec) = &svc.spec else {
-            continue;
-        };
-        if !matches!(
-            spec.type_.as_deref(),
-            Some("NodePort") | Some("LoadBalancer")
-        ) {
-            continue;
-        }
-        let ports = spec.ports.as_deref().unwrap_or_default();
-        for port in ports {
-            let Some(node_port) = port.node_port else {
-                continue;
-            };
-            if (node_port as u16) != l4_meta.local_port {
-                continue;
+        if let Some(spec) = &svc.spec {
+            if matches!(
+                spec.type_.as_deref(),
+                Some("NodePort") | Some("LoadBalancer")
+            ) {
+                if let Some(ports) = &spec.ports {
+                    let namespace = resource_namespace(&svc.metadata);
+                    if let Some(service_name) = &svc.metadata.name {
+                        for port in ports {
+                            if let Some(node_port) = port.node_port {
+                                let protocol =
+                                    port.protocol.as_deref().unwrap_or("TCP").to_string();
+                                let entry = ServicePortEntry {
+                                    protocol,
+                                    meta: SvcMeta {
+                                        namespace: namespace.clone(),
+                                        service_name: service_name.clone(),
+                                    },
+                                };
+                                map.entry(node_port as u16).or_default().push(entry);
+                            }
+                        }
+                    }
+                }
             }
-            let protocol = port.protocol.as_deref().unwrap_or("TCP");
-            if !protocol_matches(protocol, l4_meta.protocol) {
-                continue;
-            }
-            let Some(service_name) = svc.metadata.name.clone() else {
-                continue;
-            };
-            return Ok(Some(SvcMeta {
-                namespace: resource_namespace(&svc.metadata),
-                service_name,
-            }));
         }
     }
+    if let Ok(mut guard) = index.write() {
+        guard.by_nodeport = map;
+    }
+}
 
-    Ok(None)
+fn rebuild_pod_index(store: &Store<Pod>, index: &Arc<RwLock<PodIndex>>) {
+    let mut map = HashMap::new();
+    for pod in store.state() {
+        if let Some(status) = &pod.status {
+            if let Some(ip) = &status.pod_ip {
+                if let Some(name) = &pod.metadata.name {
+                    map.insert(
+                        ip.clone(),
+                        PodMeta {
+                            namespace: resource_namespace(&pod.metadata),
+                            pod_name: name.clone(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+    if let Ok(mut guard) = index.write() {
+        guard.by_ip = map;
+    }
+}
+
+fn get_ingress_ips(ingress: &Ingress) -> Vec<String> {
+    let mut ips = Vec::new();
+    if let Some(status) = &ingress.status {
+        if let Some(lb) = &status.load_balancer {
+            if let Some(entries) = &lb.ingress {
+                for entry in entries {
+                    if let Some(ip) = &entry.ip {
+                        ips.push(ip.clone());
+                    }
+                }
+            }
+        }
+    }
+    ips
 }
 
 fn protocol_matches(k8s_proto: &str, flow_proto: u8) -> bool {
@@ -204,73 +335,6 @@ fn protocol_matches(k8s_proto: &str, flow_proto: u8) -> bool {
         ("SCTP", 132) => true,
         _ => false,
     }
-}
-
-async fn lookup_pod_for_l4(store: &Store<Pod>, l4_meta: &L4Meta) -> Result<Option<PodMeta>> {
-    let local_ip = l4_meta.local_ip.to_string();
-    if let Some(pod_meta) = query_pod_by_ip(store, &local_ip).await? {
-        return Ok(Some(pod_meta));
-    }
-    let remote_ip = l4_meta.remote_ip.to_string();
-    if remote_ip == local_ip {
-        return Ok(None);
-    }
-    query_pod_by_ip(store, &remote_ip).await
-}
-
-async fn query_pod_by_ip(store: &Store<Pod>, ip: &str) -> Result<Option<PodMeta>> {
-    if ip.is_empty() {
-        return Ok(None);
-    }
-
-    for pod in store.state() {
-        let matches_ip = pod
-            .status
-            .as_ref()
-            .and_then(|status| status.pod_ip.as_ref())
-            .map(|pod_ip| pod_ip == ip)
-            .unwrap_or(false);
-        if !matches_ip {
-            continue;
-        }
-        let Some(pod_name) = pod.metadata.name.clone() else {
-            continue;
-        };
-        return Ok(Some(PodMeta {
-            namespace: resource_namespace(&pod.metadata),
-            pod_name,
-        }));
-    }
-
-    Ok(None)
-}
-
-fn ingress_status_matches_ip(status: Option<&IngressStatus>, target_ip: &str) -> bool {
-    if target_ip.is_empty() {
-        return true;
-    }
-
-    status
-        .and_then(|s| s.load_balancer.as_ref())
-        .and_then(|lb| lb.ingress.as_ref())
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|entry| entry.ip.as_ref())
-                .any(|ip| ip == target_ip)
-        })
-        .unwrap_or(false)
-}
-
-fn ingress_rule_matches_host(rule: &IngressRule, normalized_host: &str) -> bool {
-    if normalized_host.is_empty() {
-        return false;
-    }
-
-    rule.host
-        .as_deref()
-        .map(|host| normalize_host(host) == normalized_host)
-        .unwrap_or(false)
 }
 
 fn first_backend_service_name(rule: &IngressRule) -> Option<String> {
