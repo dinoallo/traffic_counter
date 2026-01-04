@@ -7,7 +7,7 @@ use std::{
     sync::Mutex,
 };
 
-use crate::label::{ClusterLabel, HttpGatewayLabel, NodePortLabel};
+use crate::label::{ClusterLabel, HttpGatewayLabel, Label, NodePortLabel};
 
 pub const COUNTER_SHARDS: usize = 64;
 
@@ -66,7 +66,7 @@ pub trait TrafficAggregate<L, T>: Send + Sync {
 }
 
 pub trait TrafficDump: Send + Sync {
-    fn dump(&self) -> Vec<Traffic>;
+    fn dump(&self) -> Vec<(Label, Traffic)>;
 }
 
 #[derive(Default)]
@@ -95,27 +95,30 @@ impl TrafficAggregate<ClusterLabel, ClusterTraffic> for TrafficCounter {
 }
 
 impl TrafficDump for TrafficCounter {
-    fn dump(&self) -> Vec<Traffic> {
-        let mut results = Vec::new();
+    fn dump(&self) -> Vec<(Label, Traffic)> {
+        let mut results: Vec<(Label, Traffic)> = Vec::new();
 
         for shard in &self.nodeport_traffic_table.shards {
             let mut guard = shard.lock().expect("CounterTable shard mutex poisoned");
-            for (_, value) in guard.drain() {
-                results.push(Traffic::NodePort(value));
+            for (key, value) in guard.drain() {
+                results.push((Label::NodePort(key), Traffic::NodePort(value)));
+                // results.push(Traffic::NodePort(value));
             }
         }
 
         for shard in &self.http_gateway_traffic_table.shards {
             let mut guard = shard.lock().expect("CounterTable shard mutex poisoned");
-            for (_, value) in guard.drain() {
-                results.push(Traffic::HttpGateway(value));
+            for (key, value) in guard.drain() {
+                results.push((Label::HttpGateway(key), Traffic::HttpGateway((value))));
+                // results.push(Traffic::HttpGateway(value));
             }
         }
 
         for shard in &self.cluster_traffic_table.shards {
             let mut guard = shard.lock().expect("CounterTable shard mutex poisoned");
-            for (_, value) in guard.drain() {
-                results.push(Traffic::Cluster(value));
+            for (key, value) in guard.drain() {
+                results.push((Label::Cluster(key), Traffic::Cluster(value)));
+                // results.push(Traffic::Cluster(value));
             }
         }
 

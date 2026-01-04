@@ -70,9 +70,27 @@ pub struct K8sPodLabel {
     pub pod_name: String,
 }
 
+impl Display for K8sPodLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "K8sPod(namespace: {}, pod: {})",
+            self.namespace, self.pod_name
+        )
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum ClusterLabel {
     K8sPod(K8sPodLabel),
+}
+
+impl Display for ClusterLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClusterLabel::K8sPod(label) => write!(f, "{}", label),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
@@ -83,9 +101,43 @@ pub struct K8sIngressLabel {
     // pub path: String,
 }
 
+impl Display for K8sIngressLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "K8sIngress(namespace: {}, service: {}, host: {})",
+            self.namespace, self.service_name, self.host
+        )
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum HttpGatewayLabel {
     K8sIngress(K8sIngressLabel),
+}
+
+impl Display for HttpGatewayLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HttpGatewayLabel::K8sIngress(label) => write!(f, "{}", label),
+        }
+    }
+}
+
+pub enum Label {
+    NodePort(NodePortLabel),
+    HttpGateway(HttpGatewayLabel),
+    Cluster(ClusterLabel),
+}
+
+impl Display for Label {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Label::NodePort(label) => write!(f, "{}", label),
+            Label::HttpGateway(label) => write!(f, "{}", label),
+            Label::Cluster(label) => write!(f, "{}", label),
+        }
+    }
 }
 
 #[async_trait]

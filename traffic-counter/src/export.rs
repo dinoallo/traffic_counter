@@ -7,8 +7,8 @@ use std::{
 };
 
 use anyhow::Result;
-use chrono::Utc;
 use tokio::time;
+use tracing::info;
 
 use crate::store::TrafficDump;
 
@@ -44,10 +44,9 @@ impl LogExporter {
             if !running.load(Ordering::Relaxed) {
                 break;
             }
-            let timestamp = Utc::now();
             let records = self.traffic_dumper.dump();
-            for record in records {
-                println!("{} - Exported Record: {}", timestamp.to_rfc3339(), record);
+            for (label, value) in records {
+                info!("Exported Record: {} => {}", label, value);
             }
         }
         Ok(())
@@ -64,10 +63,9 @@ impl LogExporter {
             if !running.load(Ordering::Relaxed) {
                 break;
             }
-            let timestamp = Utc::now();
             let records = self.traffic_dumper.dump();
-            for record in records {
-                println!("{} - Exported Record: {}", timestamp.to_rfc3339(), record);
+            for (label, value) in records {
+                info!("Exported Record: {} => {}", label, value);
             }
         }
         Ok(())
