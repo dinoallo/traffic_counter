@@ -20,3 +20,7 @@ tokio = { workspace = true, features = [
 ] }
 libc = { workspace = true }
 api = { workspace = true }
+
+[[bin]]
+name = "node"
+path = "src/main.rs"
