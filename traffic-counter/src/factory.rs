@@ -100,22 +100,21 @@ impl TrafficProcess for TrafficFactory {
         task::spawn(async move {
             while let Some(traffic) = ingress_rx.recv().await {
                 match traffic {
-                    Traffic::NodePort(t) => match labeler.k8s_labeler.label(t.clone()).await {
+                    Traffic::NodePort(t) => match labeler.label(&t).await {
                         Ok(Some(label)) => aggregator.aggregate(label, t),
                         Ok(None) => {}
                         Err(err) => warn!("failed to label nodeport traffic: {err:?}"),
                     },
-                    Traffic::HttpGateway(t) => match labeler.k8s_labeler.label(t.clone()).await {
+                    Traffic::HttpGateway(t) => match labeler.label(&t).await {
                         Ok(Some(label)) => aggregator.aggregate(label, t),
                         Ok(None) => {}
                         Err(err) => warn!("failed to label http gateway traffic: {err:?}"),
                     },
-                    Traffic::Cluster(t) => match labeler.k8s_labeler.label(t.clone()).await {
+                    Traffic::Cluster(t) => match labeler.label(&t).await {
                         Ok(Some(label)) => aggregator.aggregate(label, t),
                         Ok(None) => {}
                         Err(err) => warn!("failed to label cluster traffic: {err:?}"),
                     },
-                    _ => {}
                 }
             }
         });
