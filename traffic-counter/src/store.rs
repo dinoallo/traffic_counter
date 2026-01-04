@@ -18,7 +18,7 @@ pub struct CounterTable<K, C> {
 impl<K, C> CounterTable<K, C>
 where
     K: Hash + Eq,
-    C: Aggregatable + Default,
+    C: Aggregatable + Default + Clone,
 {
     pub fn new() -> Self {
         let mut shards = Vec::with_capacity(COUNTER_SHARDS);
@@ -39,7 +39,7 @@ where
         let mut guard = self.shards[idx]
             .lock()
             .expect("CounterTable shard mutex poisoned");
-        let entry = guard.entry(key).or_insert(C::default());
+        let entry = guard.entry(key).or_insert(traffic.clone());
         entry.aggregate(&traffic);
     }
     pub fn clear(&self, key: K) -> Option<C> {
@@ -54,7 +54,7 @@ where
 impl<K, C> Default for CounterTable<K, C>
 where
     K: Hash + Eq,
-    C: Aggregatable + Default,
+    C: Aggregatable + Default + Clone,
 {
     fn default() -> Self {
         Self::new()
