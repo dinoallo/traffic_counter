@@ -122,40 +122,24 @@ impl TryFrom<pb::Traffic> for Traffic {
             .kind
             .ok_or(ProtoConversionError::MissingField("traffic.kind"))?
         {
-            Kind::K8s(k8s) => Traffic::try_from(k8s),
-            Kind::Unknown(_) => Err(ProtoConversionError::OutOfRange("unsupported traffic kind")),
-        }
-    }
-}
-
-impl TryFrom<pb::K8sTraffic> for Traffic {
-    type Error = ProtoConversionError;
-
-    fn try_from(value: pb::K8sTraffic) -> Result<Self, Self::Error> {
-        use pb::k8s_traffic::Kind;
-
-        match value
-            .kind
-            .ok_or(ProtoConversionError::MissingField("k8s_traffic.kind"))?
-        {
-            Kind::Ingress(ingress) => Ok(api::Traffic::HttpGateway(
+            Kind::HttpGateway(ingress) => Ok(api::Traffic::HttpGateway(
                 api::HttpGatewayTraffic::try_from(ingress)?,
             )),
             Kind::NodePort(node_port) => Ok(api::Traffic::NodePort(
                 api::NodePortTraffic::try_from(node_port)?,
             )),
-            Kind::PodToWorld(pod_to_world) => Ok(api::Traffic::Cluster(
-                api::ClusterTraffic::try_from(pod_to_world)?,
-            )),
+            Kind::Cluster(cluster) => Ok(api::Traffic::Cluster(api::ClusterTraffic::try_from(
+                cluster,
+            )?)),
         }
     }
 }
 
-impl TryFrom<pb::K8sIngressTraffic> for api::HttpGatewayTraffic {
+impl TryFrom<pb::HttpGatewayTraffic> for api::HttpGatewayTraffic {
     type Error = ProtoConversionError;
 
-    fn try_from(value: pb::K8sIngressTraffic) -> Result<Self, Self::Error> {
-        let http_meta = require(value.http_meta, "k8s_ingress.http_meta")?;
+    fn try_from(value: pb::HttpGatewayTraffic) -> Result<Self, Self::Error> {
+        let http_meta = require(value.http_meta, "http_gateway.http_meta")?;
 
         Ok(api::HttpGatewayTraffic {
             http_meta: api::HttpMeta {
@@ -169,11 +153,11 @@ impl TryFrom<pb::K8sIngressTraffic> for api::HttpGatewayTraffic {
     }
 }
 
-impl TryFrom<pb::K8sNodePortTraffic> for api::NodePortTraffic {
+impl TryFrom<pb::NodePortTraffic> for api::NodePortTraffic {
     type Error = ProtoConversionError;
 
-    fn try_from(value: pb::K8sNodePortTraffic) -> Result<Self, Self::Error> {
-        let l4_meta = require(value.l4_meta, "k8s_node_port.l4_meta")?;
+    fn try_from(value: pb::NodePortTraffic) -> Result<Self, Self::Error> {
+        let l4_meta = require(value.l4_meta, "node_port.l4_meta")?;
 
         Ok(api::NodePortTraffic {
             l4_meta: convert_l4_meta(l4_meta)?,
@@ -185,11 +169,11 @@ impl TryFrom<pb::K8sNodePortTraffic> for api::NodePortTraffic {
     }
 }
 
-impl TryFrom<pb::K8sPodToWorldTraffic> for api::ClusterTraffic {
+impl TryFrom<pb::ClusterTraffic> for api::ClusterTraffic {
     type Error = ProtoConversionError;
 
-    fn try_from(value: pb::K8sPodToWorldTraffic) -> Result<Self, Self::Error> {
-        let l4_meta = require(value.l4_meta, "k8s_pod_to_world.l4_meta")?;
+    fn try_from(value: pb::ClusterTraffic) -> Result<Self, Self::Error> {
+        let l4_meta = require(value.l4_meta, "cluster.l4_meta")?;
 
         Ok(api::ClusterTraffic {
             l4_meta: convert_l4_meta(l4_meta)?,
