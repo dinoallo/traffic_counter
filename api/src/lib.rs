@@ -159,3 +159,130 @@ impl Aggregatable for Traffic {
         }
     }
 }
+
+pub mod proto {
+    pub mod trafficcounter {
+        pub mod v1 {
+            tonic::include_proto!("trafficcounter.v1");
+        }
+    }
+}
+
+use proto::trafficcounter::v1 as pb;
+use std::convert::TryFrom;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ProtoConversionError {
+    #[error("field '{0}' is required")]
+    MissingField(&'static str),
+    #[error("value in field '{0}' exceeds supported range")]
+    OutOfRange(&'static str),
+    #[error("invalid IP address in field '{0}'")]
+    InvalidIp(&'static str),
+}
+
+impl TryFrom<pb::Traffic> for Traffic {
+    type Error = ProtoConversionError;
+
+    fn try_from(value: pb::Traffic) -> Result<Self, Self::Error> {
+        use pb::traffic::Kind;
+
+        match value
+            .kind
+            .ok_or(ProtoConversionError::MissingField("traffic.kind"))?
+        {
+            Kind::HttpGateway(ingress) => {
+                Ok(Traffic::HttpGateway(HttpGatewayTraffic::try_from(ingress)?))
+            }
+            Kind::NodePort(node_port) => {
+                Ok(Traffic::NodePort(NodePortTraffic::try_from(node_port)?))
+            }
+            Kind::Cluster(cluster) => Ok(Traffic::Cluster(ClusterTraffic::try_from(cluster)?)),
+        }
+    }
+}
+
+impl TryFrom<pb::HttpGatewayTraffic> for HttpGatewayTraffic {
+    type Error = ProtoConversionError;
+
+    fn try_from(value: pb::HttpGatewayTraffic) -> Result<Self, Self::Error> {
+        let http_meta = require(value.http_meta, "http_gateway.http_meta")?;
+
+        Ok(HttpGatewayTraffic {
+            http_meta: HttpMeta {
+                host_ip: http_meta.host_ip,
+                client_ip: http_meta.client_ip,
+                host: http_meta.host,
+            },
+            request_bytes: value.request_bytes,
+            response_bytes: value.response_bytes,
+        })
+    }
+}
+
+impl TryFrom<pb::NodePortTraffic> for NodePortTraffic {
+    type Error = ProtoConversionError;
+
+    fn try_from(value: pb::NodePortTraffic) -> Result<Self, Self::Error> {
+        let l4_meta = require(value.l4_meta, "node_port.l4_meta")?;
+
+        Ok(NodePortTraffic {
+            l4_meta: convert_l4_meta(l4_meta)?,
+            rx_bytes: value.rx_bytes,
+            rx_packets: value.rx_packets,
+            tx_bytes: value.tx_bytes,
+            tx_packets: value.tx_packets,
+        })
+    }
+}
+
+impl TryFrom<pb::ClusterTraffic> for ClusterTraffic {
+    type Error = ProtoConversionError;
+
+    fn try_from(value: pb::ClusterTraffic) -> Result<Self, Self::Error> {
+        let l4_meta = require(value.l4_meta, "cluster.l4_meta")?;
+
+        Ok(ClusterTraffic {
+            l4_meta: convert_l4_meta(l4_meta)?,
+            rx_bytes: value.rx_bytes,
+            rx_packets: value.rx_packets,
+            tx_bytes: value.tx_bytes,
+            tx_packets: value.tx_packets,
+        })
+    }
+}
+
+fn convert_l4_meta(meta: pb::L4Meta) -> Result<L4Meta, ProtoConversionError> {
+    Ok(L4Meta {
+        local_ip: meta
+            .local_ip
+            .parse()
+            .map_err(|_| ProtoConversionError::InvalidIp("l4_meta.local_ip"))?,
+        remote_ip: meta
+            .remote_ip
+            .parse()
+            .map_err(|_| ProtoConversionError::InvalidIp("l4_meta.remote_ip"))?,
+        local_port: as_u16(meta.local_port, "l4_meta.local_port")?,
+        remote_port: as_u16(meta.remote_port, "l4_meta.remote_port")?,
+        protocol: parse_protocol(&meta.protocol),
+    })
+}
+
+fn parse_protocol(proto: &str) -> u8 {
+    match proto.to_lowercase().as_str() {
+        "tcp" | "6" => 6,
+        "udp" | "17" => 17,
+        "icmp" | "1" => 1,
+        _ => proto.parse().unwrap_or(0),
+    }
+}
+
+fn require<T>(value: Option<T>, field: &'static str) -> Result<T, ProtoConversionError> {
+    value.ok_or(ProtoConversionError::MissingField(field))
+}
+
+fn as_u16(value: u32, field: &'static str) -> Result<u16, ProtoConversionError> {
+    u16::try_from(value).map_err(|_| ProtoConversionError::OutOfRange(field))
+}
+
