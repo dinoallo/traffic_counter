@@ -1,12 +1,19 @@
 use anyhow::Result;
 use api::{ClusterTraffic, HttpGatewayTraffic, NodePortTraffic};
 use async_trait::async_trait;
+use std::fmt::Display;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
 pub struct ReservedPortLabel {
     pub port: u16,
     // pub protocol: String,
+}
+
+impl Display for ReservedPortLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ReservedPort({})", self.port)
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
@@ -18,10 +25,26 @@ pub struct K8sNodePortLabel {
     // pub node_port: u16,
 }
 
+impl Display for K8sNodePortLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "K8sNodePort(namespace: {}, service: {})",
+            self.namespace, self.service_name
+        )
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
 pub struct DynamicPortLabel {
     pub port: u16,
     // pub protocol: String,
+}
+
+impl Display for DynamicPortLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DynamicPort({})", self.port)
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -29,6 +52,16 @@ pub enum NodePortLabel {
     ReservedPort(ReservedPortLabel),
     K8sNodePort(K8sNodePortLabel),
     DynamicPort(DynamicPortLabel),
+}
+
+impl Display for NodePortLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NodePortLabel::ReservedPort(label) => write!(f, "{}", label),
+            NodePortLabel::K8sNodePort(label) => write!(f, "{}", label),
+            NodePortLabel::DynamicPort(label) => write!(f, "{}", label),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
