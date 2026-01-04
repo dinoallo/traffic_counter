@@ -1,7 +1,11 @@
 use std::process::exit;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Args, CommandFactory, Parser, Subcommand};
+use export::Export;
 
 mod export;
 mod factory;
@@ -27,10 +31,21 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Version(VersionCommand),
+    Run(RunArgs),
 }
 
 #[derive(Args)]
 struct VersionCommand;
+
+#[derive(Args)]
+struct RunArgs {
+    #[command(flatten)]
+    serve_config: serve::ServeConfig,
+
+    /// Export interval in seconds
+    #[arg(long, default_value = "5")]
+    export_interval_secs: u64,
+}
 
 #[tokio::main]
 async fn main() {
@@ -46,6 +61,30 @@ async fn run() -> Result<()> {
     match cli.command {
         Some(Commands::Version(_)) => {
             println!("traffic-counter {VERSION} ({GIT_DESCRIBE})");
+        }
+        Some(Commands::Run(args)) => {
+            let k8s_inquirer = Arc::new(k8s::K8sInquirer::new().await?);
+            let k8s_labeler = label::K8sTrafficLabeler::new(k8s_inquirer);
+            let labeler = Arc::new(label::TrafficLabeler::new(k8s_labeler));
+            let aggregator = Arc::new(store::TrafficCounter::default());
+
+            let factory = Arc::new(factory::TrafficFactory::new(labeler, aggregator.clone()));
+
+            let traffic_dumper: Arc<dyn store::TrafficDump> = aggregator.clone();
+            let exporter = export::LogExporter::new(traffic_dumper);
+
+            let running = Arc::new(AtomicBool::new(true));
+            let interval = Duration::from_secs(args.export_interval_secs);
+
+            let running_clone = running.clone();
+            tokio::spawn(async move {
+                if let Err(e) = exporter.run(running_clone, interval, false).await {
+                    eprintln!("Exporter failed: {e:?}");
+                }
+            });
+
+            let server = serve::Server::new(args.serve_config, factory);
+            server.run().await?;
         }
         None => {
             Cli::command().print_help().ok();

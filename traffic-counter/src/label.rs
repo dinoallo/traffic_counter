@@ -152,6 +152,18 @@ pub struct K8sTrafficLabeler {
     k8s_inquirer: Arc<dyn crate::k8s::K8sInquire + Send + Sync>,
 }
 
+impl K8sTrafficLabeler {
+    pub fn new(k8s_inquirer: Arc<dyn crate::k8s::K8sInquire + Send + Sync>) -> Self {
+        Self { k8s_inquirer }
+    }
+}
+
 pub struct TrafficLabeler {
     pub k8s_labeler: K8sTrafficLabeler,
+}
+
+impl TrafficLabeler {
+    pub fn new(k8s_labeler: K8sTrafficLabeler) -> Self {
+        Self { k8s_labeler }
+    }
 }
