@@ -286,3 +286,75 @@ fn as_u16(value: u32, field: &'static str) -> Result<u16, ProtoConversionError> 
     u16::try_from(value).map_err(|_| ProtoConversionError::OutOfRange(field))
 }
 
+impl From<Traffic> for pb::Traffic {
+    fn from(traffic: Traffic) -> Self {
+        use pb::traffic::Kind;
+        match traffic {
+            Traffic::NodePort(t) => pb::Traffic {
+                kind: Some(Kind::NodePort(t.into())),
+            },
+            Traffic::HttpGateway(t) => pb::Traffic {
+                kind: Some(Kind::HttpGateway(t.into())),
+            },
+            Traffic::Cluster(t) => pb::Traffic {
+                kind: Some(Kind::Cluster(t.into())),
+            },
+        }
+    }
+}
+
+impl From<HttpGatewayTraffic> for pb::HttpGatewayTraffic {
+    fn from(t: HttpGatewayTraffic) -> Self {
+        pb::HttpGatewayTraffic {
+            http_meta: Some(t.http_meta.into()),
+            request_bytes: t.request_bytes,
+            response_bytes: t.response_bytes,
+        }
+    }
+}
+
+impl From<NodePortTraffic> for pb::NodePortTraffic {
+    fn from(t: NodePortTraffic) -> Self {
+        pb::NodePortTraffic {
+            l4_meta: Some(t.l4_meta.into()),
+            rx_bytes: t.rx_bytes,
+            rx_packets: t.rx_packets,
+            tx_bytes: t.tx_bytes,
+            tx_packets: t.tx_packets,
+        }
+    }
+}
+
+impl From<ClusterTraffic> for pb::ClusterTraffic {
+    fn from(t: ClusterTraffic) -> Self {
+        pb::ClusterTraffic {
+            l4_meta: Some(t.l4_meta.into()),
+            rx_bytes: t.rx_bytes,
+            rx_packets: t.rx_packets,
+            tx_bytes: t.tx_bytes,
+            tx_packets: t.tx_packets,
+        }
+    }
+}
+
+impl From<HttpMeta> for pb::HttpMeta {
+    fn from(m: HttpMeta) -> Self {
+        pb::HttpMeta {
+            host_ip: m.host_ip,
+            client_ip: m.client_ip,
+            host: m.host,
+        }
+    }
+}
+
+impl From<L4Meta> for pb::L4Meta {
+    fn from(m: L4Meta) -> Self {
+        pb::L4Meta {
+            local_ip: m.local_ip.to_string(),
+            remote_ip: m.remote_ip.to_string(),
+            local_port: m.local_port as u32,
+            remote_port: m.remote_port as u32,
+            protocol: m.protocol.to_string(),
+        }
+    }
+}

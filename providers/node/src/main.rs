@@ -23,6 +23,10 @@ enum Commands {
 #[derive(Args)]
 #[command(author, about = "Count traffic of a network interface on a node", long_about = None)]
 struct RunCommand {
+    /// Address of the traffic-counter gRPC server
+    #[arg(long, default_value = "http://127.0.0.1:50051")]
+    server_addr: String,
+
     /// Network interface to join via AF_PACKET
     #[arg(long, value_name = "IFACE")]
     iface: String,
@@ -75,6 +79,7 @@ async fn run() -> anyhow::Result<()> {
         // }
         Some(Commands::Run(cmd)) => {
             let config = node::NodeConfig {
+                server_addr: cmd.server_addr,
                 iface: cmd.iface,
                 workers: cmd.workers,
                 fanout_group: cmd.fanout_group,

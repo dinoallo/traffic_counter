@@ -8,6 +8,11 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use tokio::{signal, task};
+use tonic::transport::Channel;
+
+use api::proto::trafficcounter::v1::{
+    IngestTrafficRequest, traffic_ingestor_client::TrafficIngestorClient,
+};
 
 pub use crate::packet::RingConfig;
 use crate::{
@@ -28,6 +33,7 @@ pub struct NodeOptions {
 // NodeConfig can be configured from CLI or other sources
 #[derive(Clone)]
 pub struct NodeConfig {
+    pub server_addr: String,
     pub iface: String,
     pub workers: usize,
     pub fanout_group: Option<u16>,
@@ -71,13 +77,19 @@ impl NodeRuntime {
         let running = Arc::new(AtomicBool::new(true));
         let config = &self.config;
 
+        let client = TrafficIngestorClient::connect(config.server_addr.clone())
+            .await
+            .context("failed to connect to traffic-counter server")?;
+
         let mut handles = Vec::with_capacity(config.workers);
         for worker_id in 0..config.workers {
             let running_clone = running.clone();
+            let client_clone = client.clone();
             let ctx = WorkerContext {
                 iface: config.iface.clone(),
                 fanout_group: config.fanout_group,
                 ring_cfg: config.ring,
+                client: client_clone,
             };
             let runtime = self.clone();
             handles.push(task::spawn(async move {
@@ -112,16 +124,29 @@ impl NodeRuntime {
             iface,
             fanout_group,
             ring_cfg,
+            client,
         } = ctx;
         let mut socket = PacketSocket::bind(&iface, fanout_group, ring_cfg)
             .with_context(|| format!("worker {worker_id}: failed to bind packet socket"))?;
+
         socket
             .pump(
                 &running,
                 &self.remote_whitelist,
                 &self.local_addresslist,
-                move |_, traffic| async move {
-                    //TODO: send traffic to central processor using grpc
+                move |_, traffic| {
+                    let mut client = client.clone();
+                    async move {
+                        let req = IngestTrafficRequest {
+                            traffic: Some(api::Traffic::NodePort(traffic).into()),
+                        };
+                        // TODO: Batching or fire-and-forget to avoid stalling the pump loop too much?
+                        // For now, we await. pump calls this in a loop.
+                        // If gRPC is slow, packet capture will drop packets.
+                        if let Err(e) = client.ingest_traffic(req).await {
+                            eprintln!("Failed to ingest traffic: {e}");
+                        }
+                    }
                 },
             )
             .await
@@ -132,4 +157,6 @@ struct WorkerContext {
     iface: String,
     fanout_group: Option<u16>,
     ring_cfg: RingConfig,
+    client: TrafficIngestorClient<Channel>,
 }
+

@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tonic = { version = "0.11", features = ["transport"] }
 clap = { workspace = true, features = ["derive"] }
 anyhow = { workspace = true, default-features = true }
 tokio = { workspace = true, features = [
