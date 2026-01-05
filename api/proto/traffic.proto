@@ -13,7 +13,7 @@ message L4Meta {
   string remote_ip = 2;
   uint32 local_port = 3;
   uint32 remote_port = 4;
-  string protocol = 5;
+  uint32 protocol = 5;
 }
 
 message HttpGatewayTraffic {

@@ -265,17 +265,8 @@ fn convert_l4_meta(meta: pb::L4Meta) -> Result<L4Meta, ProtoConversionError> {
             .map_err(|_| ProtoConversionError::InvalidIp("l4_meta.remote_ip"))?,
         local_port: as_u16(meta.local_port, "l4_meta.local_port")?,
         remote_port: as_u16(meta.remote_port, "l4_meta.remote_port")?,
-        protocol: parse_protocol(&meta.protocol),
+        protocol: meta.protocol as u8,
     })
-}
-
-fn parse_protocol(proto: &str) -> u8 {
-    match proto.to_lowercase().as_str() {
-        "tcp" | "6" => 6,
-        "udp" | "17" => 17,
-        "icmp" | "1" => 1,
-        _ => proto.parse().unwrap_or(0),
-    }
 }
 
 fn require<T>(value: Option<T>, field: &'static str) -> Result<T, ProtoConversionError> {
@@ -354,7 +345,7 @@ impl From<L4Meta> for pb::L4Meta {
             remote_ip: m.remote_ip.to_string(),
             local_port: m.local_port as u32,
             remote_port: m.remote_port as u32,
-            protocol: m.protocol.to_string(),
+            protocol: m.protocol as u32,
         }
     }
 }

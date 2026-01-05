@@ -1,3 +1,4 @@
+use api::HttpGatewayTraffic;
 use higress_wasm_rust::log::Log;
 use higress_wasm_rust::plugin_wrapper::HttpContextWrapper;
 use ipnet::IpNet;
@@ -8,11 +9,20 @@ use proxy_wasm::types::*;
 use serde::Deserialize;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
+
+use prost::Message;
+
+use api::proto::trafficcounter::v1::IngestTrafficRequest;
 
 const PLUGIN_NAME: &str = "traffic-counter";
 
 fn debug_default() -> bool {
     false
+}
+
+fn upstream_counter_name_default() -> String {
+    "outbound|50051||traffic_counter.default.svc.cluster.local".to_string()
 }
 #[derive(Default, Debug, Deserialize, Clone)]
 #[serde(default)]
@@ -30,6 +40,16 @@ pub struct HTTPTrafficCounter {
     total_request_body_size: usize,
     total_response_header_size: usize,
     total_response_body_size: usize,
+    // Downstream connection remote address
+    source_address: String,
+    // Downstream connection remote port
+    source_port: u16,
+    // Downstream connection local address
+    destination_address: String,
+    // Downstream connection local port
+    destination_port: u16,
+    // The host portion of the URL
+    host: String,
 }
 
 impl Default for HTTPTrafficCounter {
@@ -45,6 +65,11 @@ impl Default for HTTPTrafficCounter {
             total_request_body_size: 0,
             total_response_header_size: 0,
             total_response_body_size: 0,
+            source_address: String::new(),
+            source_port: 0,
+            destination_address: String::new(),
+            destination_port: 0,
+            host: String::new(),
         }
     }
 }
@@ -59,6 +84,47 @@ impl HTTPTrafficCounter {
             "Final total request/response body size: {}/{}",
             self.total_request_body_size, self.total_response_body_size
         ));
+    }
+    fn send_traffic(&self) {
+        let http_meta = api::HttpMeta {
+            host_ip: self.destination_address.clone(),
+            client_ip: self.source_address.clone(),
+            host: self.host.clone(),
+        };
+        let traffic = api::Traffic::HttpGateway(HttpGatewayTraffic {
+            http_meta,
+            request_bytes: self.total_request_header_size as u64
+                + self.total_request_body_size as u64,
+            response_bytes: self.total_response_header_size as u64,
+        });
+        let request = IngestTrafficRequest {
+            traffic: Some(traffic.into()),
+        };
+
+        let mut buf = Vec::new();
+        if let Err(e) = request.encode(&mut buf) {
+            self.log
+                .errorf(format_args!("Failed to encode traffic request: {}", e));
+            return;
+        }
+
+        match self.dispatch_grpc_call(
+            &self.root_config.upstream_counter_name,
+            "trafficcounter.v1.TrafficIngestor",
+            "IngestTraffic",
+            vec![],
+            Some(&buf),
+            Duration::from_secs(5),
+        ) {
+            Ok(_) => {
+                self.log
+                    .info("Successfully dispatched grpc call for traffic data");
+            }
+            Err(e) => {
+                self.log
+                    .errorf(format_args!("Failed to dispatch grpc call: {:?}", e));
+            }
+        }
     }
     fn is_white_listed(&self, ip: &IpNet) -> bool {
         match ip {
@@ -75,29 +141,47 @@ impl HttpContext for HTTPTrafficCounter {
         _num_headers: usize,
         _end_of_stream: bool,
     ) -> HeaderAction {
-        let bytes = match get_property(vec!["source", "address"]) {
-            Ok(Some(bytes)) => bytes,
-            Ok(None) => {
-                self.log.error("source.address not found");
-                return HeaderAction::Continue;
-            }
-            Err(e) => {
-                self.log.errorf(format_args!(
-                    "Error getting source address property: {:?}",
-                    e
-                ));
+        let source_address = match get_source_address() {
+            Some(addr) => addr,
+            None => {
+                self.log.error("source.address not found or invalid");
                 return HeaderAction::Continue;
             }
         };
-
-        let source = match String::from_utf8(bytes.to_vec()) {
-            Ok(s) => s,
-            Err(_) => {
-                self.log.error("Failed to convert source address to string");
+        self.source_address = source_address.clone();
+        let source_port = match get_source_port() {
+            Some(port) => port,
+            None => {
+                self.log.error("source.port not found or invalid");
                 return HeaderAction::Continue;
             }
         };
-        let ip = match parse_sockaddr_from_str(&source) {
+        self.source_port = source_port;
+        let destination_address = match get_destination_address() {
+            Some(addr) => addr,
+            None => {
+                self.log.error("destination.address not found or invalid");
+                return HeaderAction::Continue;
+            }
+        };
+        self.destination_address = destination_address.clone();
+        let destination_port = match get_destination_port() {
+            Some(port) => port,
+            None => {
+                self.log.error("destination.port not found or invalid");
+                return HeaderAction::Continue;
+            }
+        };
+        self.destination_port = destination_port;
+        let host = match get_host() {
+            Some(h) => h,
+            None => {
+                self.log.error("request.host not found or invalid");
+                return HeaderAction::Continue;
+            }
+        };
+        self.host = host;
+        let ip = match parse_sockaddr_from_str(&source_address) {
             Some((ip, _)) => ip,
             None => {
                 self.log.error("Failed to parse source IP address");
@@ -128,6 +212,7 @@ impl HttpContext for HTTPTrafficCounter {
         self.total_request_header_size += size;
         if _end_of_stream && self.root_config.debug {
             self.log_final_size();
+            self.send_traffic();
         }
         HeaderAction::Continue
     }
@@ -138,6 +223,7 @@ impl HttpContext for HTTPTrafficCounter {
         self.total_request_body_size += _body_size;
         if _end_of_stream && self.root_config.debug {
             self.log_final_size();
+            self.send_traffic();
         }
         DataAction::Continue
     }
@@ -158,6 +244,7 @@ impl HttpContext for HTTPTrafficCounter {
         self.total_response_header_size += size;
         if _end_of_stream && self.root_config.debug {
             self.log_final_size();
+            self.send_traffic();
         }
         HeaderAction::Continue
     }
@@ -168,6 +255,7 @@ impl HttpContext for HTTPTrafficCounter {
         self.total_response_body_size += _body_size;
         if _end_of_stream && self.root_config.debug {
             self.log_final_size();
+            self.send_traffic();
         }
         DataAction::Continue
     }
@@ -186,6 +274,8 @@ pub struct TrafficCounterConfig {
     pub track_req: bool,
     pub track_resp: bool,
     pub white_list: Vec<String>,
+    #[serde(default = "upstream_counter_name_default")]
+    pub upstream_counter_name: String,
 }
 
 impl Default for TrafficCounterConfig {
@@ -195,6 +285,7 @@ impl Default for TrafficCounterConfig {
             track_req: false,
             track_resp: false,
             white_list: Vec::new(),
+            upstream_counter_name: String::new(),
         }
     }
 }
@@ -293,6 +384,37 @@ fn parse_cidr_from_str(raw: &str) -> Option<IpNet> {
     }
     let ip_net: IpNet = trimmed.parse().ok()?;
     Some(ip_net)
+}
+
+fn get_source_address() -> Option<String> {
+    let bytes = get_property(vec!["source", "address"]).ok()??;
+    String::from_utf8(bytes.to_vec()).ok()
+}
+
+fn get_destination_address() -> Option<String> {
+    let bytes = get_property(vec!["destination", "address"]).ok()??;
+    String::from_utf8(bytes.to_vec()).ok()
+}
+
+fn get_source_port() -> Option<u16> {
+    let bytes = get_property(vec!["source", "port"]).ok()??;
+    if bytes.len() != 2 {
+        return None;
+    }
+    Some(u16::from_be_bytes([bytes[0], bytes[1]]))
+}
+
+fn get_destination_port() -> Option<u16> {
+    let bytes = get_property(vec!["destination", "port"]).ok()??;
+    if bytes.len() != 2 {
+        return None;
+    }
+    Some(u16::from_be_bytes([bytes[0], bytes[1]]))
+}
+
+fn get_host() -> Option<String> {
+    let bytes = get_property(vec!["request", "host"]).ok()??;
+    String::from_utf8(bytes.to_vec()).ok()
 }
 
 #[cfg(test)]
