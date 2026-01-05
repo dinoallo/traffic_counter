@@ -5,11 +5,11 @@ members = [
     "traffic-counter-common",
     "traffic-counter-ebpf",
     "providers/node",
+    "providers/higress",
     "api",
 ]
 
 default-members = ["traffic-counter","traffic-counter-common"]
-exclude = ["providers/higress"]
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
