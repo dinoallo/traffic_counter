@@ -232,22 +232,27 @@ fn rebuild_ingress_index(store: &Store<Ingress>, index: &Arc<RwLock<IngressIndex
         let namespace = resource_namespace(&ingress.metadata);
         let ips = get_ingress_ips(&ingress);
 
-        if let Some(spec) = &ingress.spec {
-            if let Some(rules) = &spec.rules {
-                for rule in rules {
-                    if let Some(host) = &rule.host {
-                        let normalized = normalize_host(host);
-                        if let Some(service_name) = first_backend_service_name(rule) {
-                            let entry = IngressEntry {
-                                ips: ips.clone(),
-                                namespace: namespace.clone(),
-                                service_name,
-                            };
-                            map.entry(normalized).or_default().push(entry);
-                        }
-                    }
-                }
-            }
+        let Some(spec) = &ingress.spec else {
+            continue;
+        };
+        let Some(rules) = &spec.rules else {
+            continue;
+        };
+        for rule in rules {
+            let Some(host) = &rule.host else {
+                continue;
+            };
+            let Some(service_name) = first_backend_service_name(rule) else {
+                continue;
+            };
+
+            let normalized = normalize_host(host);
+            let entry = IngressEntry {
+                ips: ips.clone(),
+                namespace: namespace.clone(),
+                service_name,
+            };
+            map.entry(normalized).or_default().push(entry);
         }
     }
     if let Ok(mut guard) = index.write() {
@@ -258,31 +263,35 @@ fn rebuild_ingress_index(store: &Store<Ingress>, index: &Arc<RwLock<IngressIndex
 fn rebuild_service_index(store: &Store<Service>, index: &Arc<RwLock<ServiceIndex>>) {
     let mut map: HashMap<u16, Vec<ServicePortEntry>> = HashMap::new();
     for svc in store.state() {
-        if let Some(spec) = &svc.spec {
-            if matches!(
-                spec.type_.as_deref(),
-                Some("NodePort") | Some("LoadBalancer")
-            ) {
-                if let Some(ports) = &spec.ports {
-                    let namespace = resource_namespace(&svc.metadata);
-                    if let Some(service_name) = &svc.metadata.name {
-                        for port in ports {
-                            if let Some(node_port) = port.node_port {
-                                let protocol =
-                                    port.protocol.as_deref().unwrap_or("TCP").to_string();
-                                let entry = ServicePortEntry {
-                                    protocol,
-                                    meta: SvcMeta {
-                                        namespace: namespace.clone(),
-                                        service_name: service_name.clone(),
-                                    },
-                                };
-                                map.entry(node_port as u16).or_default().push(entry);
-                            }
-                        }
-                    }
-                }
-            }
+        let Some(spec) = &svc.spec else {
+            continue;
+        };
+        if !matches!(
+            spec.type_.as_deref(),
+            Some("NodePort") | Some("LoadBalancer")
+        ) {
+            continue;
+        }
+        let Some(ports) = &spec.ports else {
+            continue;
+        };
+        let namespace = resource_namespace(&svc.metadata);
+        let Some(service_name) = &svc.metadata.name else {
+            continue;
+        };
+        for port in ports {
+            let Some(node_port) = port.node_port else {
+                continue;
+            };
+            let protocol = port.protocol.as_deref().unwrap_or("TCP").to_string();
+            let entry = ServicePortEntry {
+                protocol,
+                meta: SvcMeta {
+                    namespace: namespace.clone(),
+                    service_name: service_name.clone(),
+                },
+            };
+            map.entry(node_port as u16).or_default().push(entry);
         }
     }
     if let Ok(mut guard) = index.write() {
@@ -293,19 +302,22 @@ fn rebuild_service_index(store: &Store<Service>, index: &Arc<RwLock<ServiceIndex
 fn rebuild_pod_index(store: &Store<Pod>, index: &Arc<RwLock<PodIndex>>) {
     let mut map = HashMap::new();
     for pod in store.state() {
-        if let Some(status) = &pod.status {
-            if let Some(ip) = &status.pod_ip {
-                if let Some(name) = &pod.metadata.name {
-                    map.insert(
-                        ip.clone(),
-                        PodMeta {
-                            namespace: resource_namespace(&pod.metadata),
-                            pod_name: name.clone(),
-                        },
-                    );
-                }
-            }
-        }
+        let Some(status) = &pod.status else {
+            continue;
+        };
+        let Some(ip) = &status.pod_ip else {
+            continue;
+        };
+        let Some(name) = &pod.metadata.name else {
+            continue;
+        };
+        map.insert(
+            ip.clone(),
+            PodMeta {
+                namespace: resource_namespace(&pod.metadata),
+                pod_name: name.clone(),
+            },
+        );
     }
     if let Ok(mut guard) = index.write() {
         guard.by_ip = map;
