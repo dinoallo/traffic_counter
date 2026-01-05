@@ -1,4 +1,4 @@
-use crate::label::{ClusterLabel, HttpGatewayLabel, NodePortLabel, TrafficLabel, TrafficLabeler};
+use crate::label::{TrafficLabel, TrafficLabeler};
 use crate::store::{TrafficAggregate, TrafficCounter};
 use anyhow::{Result, anyhow};
 use api::Traffic;
@@ -11,7 +11,7 @@ use tokio::{
     sync::{Mutex, mpsc},
     task,
 };
-use tracing::{info, warn};
+use tracing::warn;
 
 #[cfg(test)]
 use std::collections::VecDeque;

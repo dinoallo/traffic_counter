@@ -1,6 +1,4 @@
-use api::{
-    Aggregatable, ClusterTraffic, HttpGatewayTraffic, HttpMeta, L4Meta, NodePortTraffic, Traffic,
-};
+use api::{Aggregatable, ClusterTraffic, HttpGatewayTraffic, NodePortTraffic, Traffic};
 use std::{
     collections::{HashMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
@@ -41,13 +39,6 @@ where
             .expect("CounterTable shard mutex poisoned");
         let entry = guard.entry(key).or_insert(traffic.clone());
         entry.aggregate(&traffic);
-    }
-    pub fn clear(&self, key: K) -> Option<C> {
-        let idx = self.shard_index(&key);
-        let mut guard = self.shards[idx]
-            .lock()
-            .expect("CounterTable shard mutex poisoned");
-        guard.remove(&key)
     }
 }
 
@@ -109,7 +100,7 @@ impl TrafficDump for TrafficCounter {
         for shard in &self.http_gateway_traffic_table.shards {
             let mut guard = shard.lock().expect("CounterTable shard mutex poisoned");
             for (key, value) in guard.drain() {
-                results.push((Label::HttpGateway(key), Traffic::HttpGateway((value))));
+                results.push((Label::HttpGateway(key), Traffic::HttpGateway(value)));
                 // results.push(Traffic::HttpGateway(value));
             }
         }
