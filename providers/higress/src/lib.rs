@@ -3,7 +3,9 @@ use higress_wasm_rust::log::Log;
 use higress_wasm_rust::plugin_wrapper::HttpContextWrapper;
 use ipnet::IpNet;
 use prefix_trie::PrefixMap;
-use proxy_wasm::hostcalls::get_property;
+use proxy_wasm::hostcalls::{
+    dequeue_shared_queue, enqueue_shared_queue, get_property, register_shared_queue,
+};
 use proxy_wasm::traits::*;
 use proxy_wasm::types::*;
 use serde::Deserialize;
@@ -16,6 +18,7 @@ use prost::Message;
 use api::proto::trafficcounter::v1::IngestTrafficRequest;
 
 const PLUGIN_NAME: &str = "traffic-counter";
+const QUEUE_NAME: &str = "traffic_counter_queue";
 
 fn debug_default() -> bool {
     false
@@ -32,6 +35,7 @@ pub struct HTTPTrafficCounter {
     root_config: Arc<TrafficCounterConfig>,
     white_list_v4: Arc<PrefixMap<ipnet::Ipv4Net, ()>>,
     white_list_v6: Arc<PrefixMap<ipnet::Ipv6Net, ()>>,
+    queue_id: Option<u32>,
     // These variables are local to each HTTP context
     log: Log,
     config: Rc<HTTPTrafficCounterConfig>,
@@ -61,6 +65,7 @@ impl Default for HTTPTrafficCounter {
             track: false,
             white_list_v4: Arc::new(PrefixMap::new()),
             white_list_v6: Arc::new(PrefixMap::new()),
+            queue_id: None,
             total_request_header_size: 0,
             total_request_body_size: 0,
             total_response_header_size: 0,
@@ -86,6 +91,14 @@ impl HTTPTrafficCounter {
         ));
     }
     fn send_traffic(&self) {
+        let Some(queue_id) = self.queue_id else {
+            if self.root_config.debug {
+                self.log
+                    .warn("Queue ID not available, dropping traffic data");
+            }
+            return;
+        };
+
         let http_meta = api::HttpMeta {
             host_ip: self.destination_address.clone(),
             client_ip: self.source_address.clone(),
@@ -95,7 +108,8 @@ impl HTTPTrafficCounter {
             http_meta,
             request_bytes: self.total_request_header_size as u64
                 + self.total_request_body_size as u64,
-            response_bytes: self.total_response_header_size as u64,
+            response_bytes: self.total_response_header_size as u64
+                + self.total_response_body_size as u64,
         });
         let request = IngestTrafficRequest {
             traffic: Some(traffic.into()),
@@ -108,21 +122,15 @@ impl HTTPTrafficCounter {
             return;
         }
 
-        match self.dispatch_grpc_call(
-            &self.root_config.upstream_counter_name,
-            "trafficcounter.v1.TrafficIngestor",
-            "IngestTraffic",
-            vec![],
-            Some(&buf),
-            Duration::from_secs(5),
-        ) {
+        match enqueue_shared_queue(queue_id, Some(buf.as_slice())) {
             Ok(_) => {
-                self.log
-                    .info("Successfully dispatched grpc call for traffic data");
+                if self.root_config.debug {
+                    self.log.info("Queued traffic request");
+                }
             }
             Err(e) => {
                 self.log
-                    .errorf(format_args!("Failed to dispatch grpc call: {:?}", e));
+                    .errorf(format_args!("Failed to enqueue traffic request: {:?}", e));
             }
         }
     }
@@ -295,6 +303,8 @@ struct TrafficCounter {
     root_config: Arc<TrafficCounterConfig>,
     white_list_v4: Arc<PrefixMap<ipnet::Ipv4Net, ()>>,
     white_list_v6: Arc<PrefixMap<ipnet::Ipv6Net, ()>>,
+    queue_id: Option<u32>,
+    stream_token: Option<u32>,
 }
 
 impl Default for TrafficCounter {
@@ -304,11 +314,34 @@ impl Default for TrafficCounter {
             root_config: Arc::new(TrafficCounterConfig::default()),
             white_list_v4: Arc::new(PrefixMap::new()),
             white_list_v6: Arc::new(PrefixMap::new()),
+            queue_id: None,
+            stream_token: None,
         }
     }
 }
 
-impl Context for TrafficCounter {}
+impl Context for TrafficCounter {
+    fn on_grpc_stream_close(&mut self, token_id: u32, status_code: u32) {
+        if self.stream_token == Some(token_id) {
+            self.log.warnf(format_args!(
+                "gRPC stream closed with status: {}",
+                status_code
+            ));
+            self.stream_token = None;
+        }
+    }
+    fn on_grpc_call_response(&mut self, token_id: u32, status_code: u32, _response_size: usize) {
+        if status_code != 0 {
+            self.log.warnf(format_args!(
+                "gRPC call response received with non-zero status: {}",
+                status_code
+            ));
+            if self.stream_token == Some(token_id) {
+                self.stream_token = None;
+            }
+        }
+    }
+}
 
 impl RootContext for TrafficCounter {
     fn on_configure(&mut self, _plugin_configuration_size: usize) -> bool {
@@ -347,6 +380,22 @@ impl RootContext for TrafficCounter {
         }
         self.white_list_v4 = Arc::new(white_list_v4);
         self.white_list_v6 = Arc::new(white_list_v6);
+
+        match register_shared_queue(QUEUE_NAME) {
+            Ok(id) => {
+                self.queue_id = Some(id);
+                if self.root_config.debug {
+                    self.log
+                        .infof(format_args!("Registered shared queue with id: {}", id));
+                }
+            }
+            Err(e) => {
+                self.log
+                    .errorf(format_args!("Failed to register shared queue: {:?}", e));
+            }
+        }
+
+        self.set_tick_period(Duration::from_millis(100));
         true
     }
     fn create_http_context(&self, _context_id: u32) -> Option<Box<dyn HttpContext>> {
@@ -355,10 +404,64 @@ impl RootContext for TrafficCounter {
             root_config: self.root_config.clone(),
             white_list_v4: self.white_list_v4.clone(),
             white_list_v6: self.white_list_v6.clone(),
+            queue_id: self.queue_id,
             ..Default::default()
         };
         Some(Box::new(http_traffic_counter))
     }
+    fn on_tick(&mut self) {
+        let Some(queue_id) = self.queue_id else {
+            return;
+        };
+
+        if self.stream_token.is_none() {
+            // The stream_token being None indicates that we don't currently have an open gRPC stream to the traffic counter service, so we attempt to open one.
+            if self.root_config.upstream_counter_name.is_empty() {
+                return;
+            }
+            match self.open_grpc_stream(
+                &self.root_config.upstream_counter_name,
+                "trafficcounter.v1.TrafficIngestor",
+                "IngestTraffic",
+                vec![],
+            ) {
+                Ok(token) => {
+                    self.stream_token = Some(token);
+                    if self.root_config.debug {
+                        self.log.info("Opened gRPC stream");
+                    }
+                }
+                Err(e) => {
+                    self.log
+                        .errorf(format_args!("Failed to open gRPC stream: {:?}", e));
+                }
+            }
+        }
+
+        loop {
+            match dequeue_shared_queue(queue_id) {
+                Ok(Some(data)) => {
+                    if self.stream_token.is_some() {
+                        // At this point we have a valid stream token and queue ID, so we can attempt to send any queued traffic data
+                        // unwrap is safe because we check for None above
+                        self.send_grpc_stream_message(
+                            self.stream_token.unwrap(),
+                            Some(&data),
+                            false,
+                        )
+                    }
+                    // If self.stream_token is somehow still None, we do nothing (by discarding the data) to prevent filling up the shared queue.
+                }
+                Ok(None) => break, // Queue is empty
+                Err(e) => {
+                    self.log
+                        .errorf(format_args!("Failed to dequeue from shared queue: {:?}", e));
+                    break;
+                }
+            }
+        }
+    }
+
     fn get_type(&self) -> Option<ContextType> {
         Some(ContextType::HttpContext)
     }
