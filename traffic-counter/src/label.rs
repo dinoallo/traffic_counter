@@ -49,17 +49,17 @@ impl Display for DynamicPortLabel {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum NodePortLabel {
-    ReservedPort(ReservedPortLabel),
-    K8sNodePort(K8sNodePortLabel),
-    DynamicPort(DynamicPortLabel),
+    Reserved(ReservedPortLabel),
+    K8sNode(K8sNodePortLabel),
+    Dynamic(DynamicPortLabel),
 }
 
 impl Display for NodePortLabel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NodePortLabel::ReservedPort(label) => write!(f, "{}", label),
-            NodePortLabel::K8sNodePort(label) => write!(f, "{}", label),
-            NodePortLabel::DynamicPort(label) => write!(f, "{}", label),
+            NodePortLabel::Reserved(label) => write!(f, "{}", label),
+            NodePortLabel::K8sNode(label) => write!(f, "{}", label),
+            NodePortLabel::Dynamic(label) => write!(f, "{}", label),
         }
     }
 }
@@ -181,7 +181,7 @@ impl TrafficLabel<NodePortTraffic, NodePortLabel> for K8sTrafficLabeler {
         let Some(svc_meta) = result else {
             return Ok(None);
         };
-        let l = NodePortLabel::K8sNodePort(K8sNodePortLabel {
+        let l = NodePortLabel::K8sNode(K8sNodePortLabel {
             namespace: svc_meta.namespace,
             service_name: svc_meta.service_name,
         });
@@ -197,11 +197,11 @@ impl TrafficLabel<NodePortTraffic, NodePortLabel> for TrafficLabeler {
         }
         // Fallback to other labeling strategies here if needed
         if traffic.l4_meta.local_port < 1024 {
-            Ok(Some(NodePortLabel::ReservedPort(ReservedPortLabel {
+            Ok(Some(NodePortLabel::Reserved(ReservedPortLabel {
                 port: traffic.l4_meta.local_port,
             })))
         } else {
-            Ok(Some(NodePortLabel::DynamicPort(DynamicPortLabel {
+            Ok(Some(NodePortLabel::Dynamic(DynamicPortLabel {
                 port: traffic.l4_meta.local_port,
             })))
         }

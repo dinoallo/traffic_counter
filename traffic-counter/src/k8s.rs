@@ -217,10 +217,10 @@ impl K8sInquire for K8sInquirer {
             return Ok(Some(meta.clone()));
         }
         let remote_ip = l4_meta.remote_ip.to_string();
-        if remote_ip != local_ip {
-            if let Some(meta) = index.by_ip.get(&remote_ip) {
-                return Ok(Some(meta.clone()));
-            }
+        if remote_ip != local_ip
+            && let Some(meta) = index.by_ip.get(&remote_ip)
+        {
+            return Ok(Some(meta.clone()));
         }
         Ok(None)
     }
@@ -326,14 +326,13 @@ fn rebuild_pod_index(store: &Store<Pod>, index: &Arc<RwLock<PodIndex>>) {
 
 fn get_ingress_ips(ingress: &Ingress) -> Vec<String> {
     let mut ips = Vec::new();
-    if let Some(status) = &ingress.status {
-        if let Some(lb) = &status.load_balancer {
-            if let Some(entries) = &lb.ingress {
-                for entry in entries {
-                    if let Some(ip) = &entry.ip {
-                        ips.push(ip.clone());
-                    }
-                }
+    if let Some(status) = &ingress.status
+        && let Some(lb) = &status.load_balancer
+        && let Some(entries) = &lb.ingress
+    {
+        for entry in entries {
+            if let Some(ip) = &entry.ip {
+                ips.push(ip.clone());
             }
         }
     }
@@ -341,12 +340,10 @@ fn get_ingress_ips(ingress: &Ingress) -> Vec<String> {
 }
 
 fn protocol_matches(k8s_proto: &str, flow_proto: u8) -> bool {
-    match (k8s_proto.to_uppercase().as_str(), flow_proto) {
-        ("TCP", 6) => true,
-        ("UDP", 17) => true,
-        ("SCTP", 132) => true,
-        _ => false,
-    }
+    matches!(
+        (k8s_proto.to_uppercase().as_str(), flow_proto),
+        ("TCP", 6) | ("UDP", 17) | ("SCTP", 132)
+    )
 }
 
 fn first_backend_service_name(rule: &IngressRule) -> Option<String> {
@@ -374,12 +371,14 @@ fn resource_namespace(meta: &ObjectMeta) -> String {
 }
 
 #[derive(Default)]
+#[allow(dead_code)]
 pub struct DummyK8sInquirer {
     ingress_by_http: HashMap<IngressKey, SvcMeta>,
     nodeport_by_l4: HashMap<L4Meta, SvcMeta>,
     pod_to_world_by_l4: HashMap<L4Meta, PodMeta>,
 }
 
+#[allow(dead_code)]
 impl DummyK8sInquirer {
     pub fn new() -> Self {
         Self::default()

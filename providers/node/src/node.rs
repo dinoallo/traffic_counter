@@ -185,7 +185,7 @@ impl NodeRuntime {
                         // this will backpressure (wait).
                         // If we wanted to drop packets when full, we'd use try_send.
                         // Here we await, effectively pausing capture if downstream is blocked.
-                        if let Err(_) = tx.send(req).await {
+                        if (tx.send(req).await).is_err() {
                             // Stable receiver closed (shouldn't happen unless manager task panics)
                             eprintln!("Worker {worker_id}: Stable channel closed unexpectedly");
                         }

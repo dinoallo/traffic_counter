@@ -53,12 +53,14 @@ impl TrafficFactory {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub struct DummyTrafficFactory {
     buffer: Mutex<VecDeque<Traffic>>,
     notify: Notify,
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 impl DummyTrafficFactory {
     pub fn new() -> Self {
         Self {
