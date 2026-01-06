@@ -4,5 +4,6 @@ namespace: traffic-counter
 resources:
   - namespace.yaml
   - serviceaccount.yaml
-  - configmap.yaml
-  - daemonset.yaml
+  - clusterole.yaml
+  - service.yaml
+  - deployment.yaml

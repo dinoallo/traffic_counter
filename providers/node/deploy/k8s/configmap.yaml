@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: traffic-counter-files
+  name: traffic-node-provider-files
   namespace: traffic-counter
   labels:
-    app.kubernetes.io/name: traffic-counter
+    app.kubernetes.io/name: traffic-node-provider
     app.kubernetes.io/part-of: traffic-counter
 data:
   ignore.txt: |-
