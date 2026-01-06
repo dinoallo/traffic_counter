@@ -6,8 +6,13 @@ license.workspace = true
 
 [dependencies]
 thiserror = "1.0"
-tonic = { version = "0.11", features = ["transport", "codegen", "prost"] }
+# Standard tonic dependency with default features disabled
+tonic = { version = "0.11", default-features = false, features = ["codegen", "prost"] }
 prost = "0.12"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Enable transport (client/server) only for non-wasm targets
+tonic = { version = "0.11", features = ["transport", "codegen", "prost"] }
 
 [build-dependencies]
 tonic-build = "0.11"
