@@ -1,5 +1,6 @@
 FROM rust:1.91-slim AS builder
 WORKDIR /workspace
+RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
 RUN rustup target add wasm32-wasip1
 ARG PLUGIN_NAME="traffic-counter"
 ARG BUILD_OPTS="--release"
