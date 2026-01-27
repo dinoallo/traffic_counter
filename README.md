@@ -11,8 +11,6 @@ Traffic Counter is a per-node network traffic counting agent that combines a sma
 The `refactor-packet-socket-filter` change now captures traffic exclusively through an `AF_PACKET` pipeline. Each node process:
 
 - Joins interface RX queues via `PACKET_FANOUT` and TPACKET_V3 rings.
-- Loads the socket filter from `traffic-counter-ebpf` to drop non-IP frames before userspace work.
-- Counts per-IP (and optional per-flow) stats inside sharded hash maps and publishes deltas at a fixed cadence.
 
 Review the detailed design in `openspec/changes/refactor-packet-socket-filter/` before extending the agent.
 
@@ -54,8 +52,6 @@ sudo setcap cap_net_raw,cap_bpf+ep target/release/traffic-counter
 For first-time contributors, here's a short description of the repository layout and where to look.
 
 - `traffic-counter/`: Primary userspace binary crate — runtime, CLI, and the AF_PACKET ingestion pipeline with fanout, ring management, and sharded counters (contains `Cargo.toml`, `src/main.rs`).
-- `traffic-counter-common/`: Shared library crate with types and helpers used across the project.
-- `traffic-counter-ebpf/`: Socket-filter eBPF program and build logic (Rust `aya-bpf`) used with `SO_ATTACH_BPF`. Compiles to the artifacts embedded by the userspace binary.
 - `openspec/`: Design docs, proposals, and project-level specs (including `project.md` and change proposals under `changes/`).
 - `scripts/`: Small helper scripts for common developer tasks (`build-ebpf.sh`, `check-deps.sh`).
 - Top-level files: `Makefile`, root `Cargo.toml`, and this `README.md` provide build targets, dependency management, and getting-started instructions.
@@ -174,7 +170,6 @@ kubectl apply -k deploy/k8s
 
 ## Development notes
 
-- The socket filter must remain short and verifier-friendly; use the Rust `aya-bpf` APIs in `traffic-counter-ebpf/` to describe matches and keep only L3 IP frames.
 - Userspace counting happens in sharded hash maps. Tune shard count and worker affinity before optimizing the filter—it is usually the CPU bottleneck.
 - Ring sizing matters: set `--block-size`, `--block-count`, and `--frame-size` large enough for the NIC speed to avoid overruns. Stats printed by the CLI call out when the kernel drops frames.
 

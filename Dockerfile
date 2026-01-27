@@ -10,19 +10,15 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN rustup toolchain install nightly --profile minimal --component rust-src
-RUN rustup toolchain install stable --profile minimal  
+RUN rustup toolchain install stable --profile minimal
 RUN cargo install --locked bpf-linker
 
 COPY Cargo.toml Cargo.lock ./
 COPY traffic-counter/Cargo.toml traffic-counter/
-COPY traffic-counter-common/Cargo.toml traffic-counter-common/
-COPY traffic-counter-ebpf/Cargo.toml traffic-counter-ebpf/
 
 # Cache dependencies before copying the full workspace
-RUN mkdir -p traffic-counter/src traffic-counter-common/src traffic-counter-ebpf/src \
+RUN mkdir -p traffic-counter/src \
     && touch traffic-counter/src/lib.rs \
-    && touch traffic-counter-common/src/lib.rs \
-    && touch traffic-counter-ebpf/src/lib.rs \
     && cargo fetch --locked
 
 COPY . .

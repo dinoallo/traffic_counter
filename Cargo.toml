@@ -2,14 +2,12 @@
 resolver = "2"
 members = [
     "traffic-counter",
-    "traffic-counter-common",
-    "traffic-counter-ebpf",
     "providers/node",
     "providers/higress",
     "api",
 ]
 
-default-members = ["traffic-counter","traffic-counter-common"]
+default-members = ["traffic-counter"]
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
@@ -22,7 +20,6 @@ aya-ebpf = { git = "https://github.com/aya-rs/aya", default-features = false }
 aya-log = { git = "https://github.com/aya-rs/aya", default-features = false }
 aya-log-ebpf = { git = "https://github.com/aya-rs/aya", default-features = false }
 
-traffic-counter-common = { path = "traffic-counter-common" }
 api = { path = "api" }
 
 anyhow = { version = "1", default-features = false }
@@ -36,7 +33,3 @@ libc = { version = "0.2.159", default-features = false }
 log = { version = "0.4.22", default-features = false }
 tokio = { version = "1.40.0", default-features = false }
 which = { version = "6.0.0", default-features = false }
-
-[profile.release.package.traffic-counter-ebpf]
-debug = 2
-codegen-units = 1

@@ -9,8 +9,6 @@ This project attaches to devices on the node, and count the traffic from/to IP a
 The repository layout (updated) is described below for a first-time contributor. Each entry explains the purpose and where to look for implementation details.
 
 - `traffic-counter/`: The primary userspace binary crate that runs the traffic counter agent. Look here for the main runtime, CLI flags, and runtime integration (contains `Cargo.toml`, `build.rs`, and `src/main.rs`).
-- `traffic-counter-common/`: Shared library crate with common types, helper functions and interfaces used by both userspace and eBPF components.
-- `traffic-counter-ebpf/`: eBPF crate and eBPF-related build artifacts. This contains the eBPF program sources (Rust and/or C), `build.rs` for producing BPF objects, and a `contrib/` folder with example C helpers (e.g., `xdp_traffic_counter.c`). Treat this directory as the kernel-side codebase.
 - `openspec/`: Project documentation, proposals, and design artifacts. Includes `project.md` (this file), `AGENTS.md`, and change proposals under `changes/`.
 - `scripts/`: Convenience scripts for development tasks such as building eBPF objects and verifying host dependencies (`build-ebpf.sh`, `check-deps.sh`).
 - `Makefile`, top-level `Cargo.toml`, and `README.md`: Repository-level build targets, dependency management, and getting-started documentation.
@@ -19,7 +17,6 @@ The repository layout (updated) is described below for a first-time contributor.
 
 Notes:
 
-- The `traffic-counter-ebpf` directory holds kernel-space code and may include architecture-specific build steps; consult `build.rs` and `contrib/` for example workflows.
 - The `target/` directory contains compiled artifacts — contributors will not normally edit files here.
 
 ## Tech Stack
@@ -109,7 +106,6 @@ Build helpers
 
 - A `Makefile` is provided at the repository root for common developer tasks: `make build` (userspace and ebpf code), `make fmt`, `make clippy`, `make test`, and `make clean`.
 - Helper scripts live in `scripts/`:
-  - `scripts/build-ebpf.sh` — compiles all `*.c` files from `traffic-counter-ebpf/contrib` into `traffic-counter-ebpf/contrib/target/bpf/` using `clang -target bpf`.
   - `scripts/check-deps.sh` — verifies `cargo`, `rustc`, `clang`, and `bpftool` are available on the PATH.
 
 Usage examples:

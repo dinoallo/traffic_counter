@@ -20,6 +20,8 @@ fn main() -> anyhow::Result<()> {
         "cargo:rustc-env=TRAFFIC_COUNTER_VERSION={}",
         env!("CARGO_PKG_VERSION")
     );
+    Ok(())
+    /*
     let cargo_metadata::Metadata { packages, .. } = cargo_metadata::MetadataCommand::new()
         .no_deps()
         .exec()
@@ -42,6 +44,7 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
     build_ebpf_quiet([ebpf_package], Toolchain::default())
+    */
 }
 
 fn embed_git_metadata() -> Result<()> {
@@ -59,6 +62,7 @@ fn embed_git_metadata() -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn build_ebpf_quiet<'a>(
     packages: impl IntoIterator<Item = Package<'a>>,
     toolchain: Toolchain<'a>,

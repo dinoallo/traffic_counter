@@ -2,21 +2,17 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
     paths:
-      - 'traffic-counter/**'
-      - 'traffic-counter-common/**'
-      - 'traffic-counter-ebpf/**'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
+      - "traffic-counter/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
     paths:
-      - 'traffic-counter/**'
-      - 'traffic-counter-common/**'
-      - 'traffic-counter-ebpf/**'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
+      - "traffic-counter/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
 
 jobs:
   checks:
@@ -44,7 +40,7 @@ jobs:
           override: true
           default: true
           components: clippy,rustfmt
-      
+
       - name: Install Nightly toolchain
         uses: actions-rs/toolchain@v1
         with:
@@ -57,11 +53,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y make
-          
+
       - name: Install bpf linker
         run: |
           cargo install bpf-linker
-      
+
       - name: Check dependencies
         run: make check-deps
 
