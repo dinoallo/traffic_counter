@@ -1,0 +1,18 @@
+[package]
+name = "higress-l4"
+version = "0.0.0-alpha"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+multimap = "0.10.1"
+proxy-wasm = { git="https://github.com/higress-group/proxy-wasm-rust-sdk", branch="main", version="0.2.2" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+prefix-trie = "0.8.1"
+ipnet = "2.11.0"
+prost = "0.12"
+api = { workspace = true }
+
+[lib]
+crate-type = ["cdylib"]
