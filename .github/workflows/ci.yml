@@ -4,12 +4,14 @@ on:
   push:
     branches: [main, master]
     paths:
+      - ".github/workflows/ci.yml"
       - "traffic-counter/**"
       - "Cargo.lock"
       - "Cargo.toml"
   pull_request:
     branches: [main, master]
     paths:
+      - ".github/workflows/ci.yml"
       - "traffic-counter/**"
       - "Cargo.lock"
       - "Cargo.toml"
@@ -56,7 +58,7 @@ jobs:
 
       - name: Install bpf linker
         run: |
-          cargo install bpf-linker
+          command -v bpf-linker >/dev/null 2>&1 || cargo install bpf-linker
 
       - name: Check dependencies
         run: make check-deps
