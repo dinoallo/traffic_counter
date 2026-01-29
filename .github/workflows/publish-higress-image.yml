@@ -15,7 +15,7 @@ jobs:
       packages: write
     env:
       PROVIDER_NAME: higress
-      IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/traffic-counter/providers/${{ env.PROVIDER_NAME }}
+      IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/traffic-counter/providers/higress
     steps:
       - name: Checkout
         uses: actions/checkout@v4
