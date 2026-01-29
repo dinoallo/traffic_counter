@@ -1,0 +1,16 @@
+FROM rust:1.91-slim AS builder
+WORKDIR /workspace
+RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+RUN rustup target add wasm32-wasip1
+ARG PROVIDER_NAME="higress-l4"
+ARG BUILD_OPTS="--release"
+ARG PREBUILD=".prebuild"
+COPY . .
+WORKDIR /workspace/extensions/$PROVIDER_NAME
+RUN if [ -f $PREBUILD ]; then sh $PREBUILD; fi
+RUN cargo build --target wasm32-wasip1 $BUILD_OPTS \
+    && cp /workspace/target/wasm32-wasip1/release/*.wasm /main.wasm \
+    && cargo clean
+
+FROM scratch AS output
+COPY --from=builder /main.wasm plugin.wasm
