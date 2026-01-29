@@ -8,14 +8,14 @@ all: build
 
 build: build-debug
 
-build-debug: check-deps
+build-debug: check-deps fmt clippy test
 	cargo build
 
-build-release: check-deps
+build-release: check-deps fmt clippy test
 	cargo build --release
 
 fmt:
-	cargo fmt --all -- --check
+	cargo fmt --check
 
 clippy:
 	cargo clippy --all-targets --all-features -- -D warnings
@@ -24,7 +24,7 @@ test:
 	cargo test --all-features --quiet
 
 check-deps:
-	@echo "Checking for eBPF toolchain"
+	@echo "Checking for dependencies..."
 	$(SHELL) scripts/check-deps.sh
 
 clean:

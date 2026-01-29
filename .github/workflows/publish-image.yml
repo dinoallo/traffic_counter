@@ -43,7 +43,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile
+          file: ./traffic-counter/Dockerfile
           push: true
           platforms: linux/amd64
           cache-from: type=gha
