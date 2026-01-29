@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "traffic-counter",
     "providers/node",
-    # "providers/higress",
+    "providers/higress",
     "providers/higress-l4",
     "api",
 ]

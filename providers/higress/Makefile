@@ -1,48 +1,37 @@
-PLUGIN_NAME ?= traffic-counter
-BUILDER_REGISTRY ?= ghcr.io/dinoallo/traffic-counter/plugins/higress/
-REGISTRY ?= ghcr.io/dinoallo/traffic-counter/plugins/higress/
+PROVIDER_NAME ?= higress
+BUILDER_REGISTRY ?= ghcr.io/dinoallo/traffic-counter/tools
+REGISTRY ?= ghcr.io/dinoallo/traffic-counter/providers
 RUST_VERSION ?= 1.91
 ORAS_VERSION ?= 1.0.0
-BUILDER ?= ${BUILDER_REGISTRY}wasm-rust-builder:rust${RUST_VERSION}-oras${ORAS_VERSION}
+#TODO: we are not using BUILDER currently?
+BUILDER ?= ${BUILDER_REGISTRY}/wasm-rust-builder:v0.0.0-alpha
 BUILD_TIME := $(shell date "+%Y%m%d-%H%M%S")
 COMMIT_ID := $(shell git rev-parse --short HEAD 2>/dev/null)
 IMAGE_TAG = $(if $(strip $(PLUGIN_VERSION)),${PLUGIN_VERSION},${BUILD_TIME}-${COMMIT_ID})
-IMG ?= ${REGISTRY}${PLUGIN_NAME}:${IMAGE_TAG}
+IMAGE ?= ${REGISTRY}/${PROVIDER_NAME}:${IMAGE_TAG}
 
 .DEFAULT:
 build:
 	DOCKER_BUILDKIT=1 docker build \
-		--build-arg PLUGIN_NAME=${PLUGIN_NAME} \
-		-t ${IMG} \
-	    --output extensions/${PLUGIN_NAME} \
+		--build-arg PROVIDER_NAME=${PROVIDER_NAME} \
+		-t ${IMAGE} \
+	    --output extensions/${PROVIDER_NAME} \
 	    .
 	@echo ""
-	@echo "output wasm file: extensions/${PLUGIN_NAME}/plugin.wasm"
+	@echo "output wasm file: extensions/${PROVIDER_NAME}/plugin.wasm"
 
 build-image:
 	DOCKER_BUILDKIT=1 docker build \
-	    --build-arg PLUGIN_NAME=${PLUGIN_NAME} \
+	    --build-arg PROVIDER_NAME=${PROVIDER_NAME} \
 	    --build-arg BUILDER=${BUILDER}  \
-	    -t ${IMG} \
+	    -t ${IMAGE} \
 	    .
 	@echo ""
-	@echo "image:            ${IMG}"
+	@echo "image:            ${IMAGE}"
 
 lint-base:
-	cargo fmt --all --check
-	cargo clippy --workspace --all-features --all-targets
-	cargo clean
+	cargo fmt --check
+	cargo clippy --all-targets --all-features -- -D warnings
 
 test-base:
 	cargo test --lib
-	cargo clean
-
-builder:
-	DOCKER_BUILDKIT=1 docker build \
-			--build-arg RUST_VERSION=$(RUST_VERSION) \
-			--build-arg ORAS_VERSION=$(ORAS_VERSION) \
-			-f Dockerfile.builder \
-			-t ${BUILDER} \
-			.
-	@echo ""
-	@echo "image: ${BUILDER}"
