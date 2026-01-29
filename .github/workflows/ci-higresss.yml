@@ -1,19 +1,19 @@
 name: ci-for-higress
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
     paths:
-      - 'providers/higress/src/**'
-      - 'providers/higress/vendor/**'
-      - 'providers/higress/Cargo.lock'
-      - 'providers/higress/Cargo.toml'
+      - "providers/higress/src/**"
+      - "providers/higress/vendor/**"
+      - "providers/higress/Cargo.lock"
+      - "providers/higress/Cargo.toml"
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
     paths:
-      - 'providers/higress/src/**'
-      - 'providers/higress/vendor/**'
-      - 'providers/higress/Cargo.lock'
-      - 'providers/higress/Cargo.toml'
+      - "providers/higress/src/**"
+      - "providers/higress/vendor/**"
+      - "providers/higress/Cargo.lock"
+      - "providers/higress/Cargo.toml"
 
 jobs:
   checks:
@@ -45,7 +45,7 @@ jobs:
       - name: Install build dependencies and target
         run: |
           sudo apt-get update
-          sudo apt-get install -y make
+          sudo apt-get install -y make protobuf-compiler
 
       - name: Run linter
         working-directory: providers/higress
