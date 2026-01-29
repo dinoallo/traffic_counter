@@ -1,6 +1,6 @@
 PROVIDER_NAME ?= higress-l4
 BUILDER_REGISTRY ?= ghcr.io/dinoallo/traffic-counter/tools
-REGISTRY ?= ghcr.io/dinoallo/traffic-counter/providers/higress/
+REGISTRY ?= ghcr.io/dinoallo/traffic-counter/providers
 RUST_VERSION ?= 1.91
 ORAS_VERSION ?= 1.0.0
 #TODO: we are not using BUILDER currently?
