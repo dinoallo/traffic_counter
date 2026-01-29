@@ -32,8 +32,6 @@ build-image:
 lint-base:
 	cargo fmt --check
 	cargo clippy --all-targets --all-features -- -D warnings
-	cargo clean
 
 test-base:
 	cargo test --lib
-	cargo clean
