@@ -22,7 +22,7 @@ fn upstream_counter_name_default() -> String {
     "outbound|50051||traffic_counter.default.svc.cluster.local".to_string()
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Default, Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct TrafficCounterConfig {
     pub track_req: bool,
@@ -30,17 +30,6 @@ pub struct TrafficCounterConfig {
     pub white_list: Vec<String>,
     #[serde(default = "upstream_counter_name_default")]
     pub upstream_counter_name: String,
-}
-
-impl Default for TrafficCounterConfig {
-    fn default() -> Self {
-        Self {
-            track_req: false,
-            track_resp: false,
-            white_list: Vec::new(),
-            upstream_counter_name: String::new(),
-        }
-    }
 }
 
 struct TrafficCounter {
