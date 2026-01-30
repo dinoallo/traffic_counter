@@ -12,15 +12,13 @@ RUN apt-get update \
 
 RUN rustup toolchain install nightly --profile minimal --component rust-src
 RUN rustup toolchain install stable --profile minimal
-RUN cargo install --locked bpf-linker
-
-# Cache dependencies before copying the full workspace
-RUN mkdir -p src \
-    && touch src/lib.rs \
-    && cargo fetch --locked
 
 COPY . .
-RUN make build-release
+# Perform building with caching of cargo registry and target directory
+RUN --mount=type=cache,target=/usr/local/cargo,from=rust:1.91-slim,source=/usr/local/cargo \
+    --mount=type=cache,target=target \
+    cargo install --locked bpf-linker && \
+    cargo build -p traffic-counter --release
 
 FROM gcr.io/distroless/cc-debian12:debug AS runtime
 

@@ -54,7 +54,7 @@ jobs:
       - name: Install build dependencies and target
         run: |
           sudo apt-get update
-          sudo apt-get install -y make
+          sudo apt-get install -y git make protobuf-compiler
 
       - name: Install bpf linker
         run: |
@@ -64,10 +64,10 @@ jobs:
         run: make check-deps
 
       - name: Format check
-        run: make fmt
+        run: cargo fmt -p traffic-counter -- --check
 
       - name: Clippy
-        run: make clippy
+        run: cargo clippy -p traffic-counter --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: make test
+        run: cargo test -p traffic-counter --all-features --quiet

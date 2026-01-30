@@ -50,6 +50,3 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.value }}
-          build-args: |
-            PROVIDER_NAME=${{ env.PROVIDER_NAME }}
-            BUILD_OPTS=--manifest-path /workspace/providers/higress/Cargo.toml --release

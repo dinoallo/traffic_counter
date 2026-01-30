@@ -1,5 +1,5 @@
 [package]
-name = "node"
+name = "node-provider"
 version = "0.0.0-alpha"
 edition.workspace = true
 
@@ -22,5 +22,5 @@ libc = { workspace = true }
 api = { workspace = true }
 
 [[bin]]
-name = "node"
+name = "node-provider"
 path = "src/main.rs"
