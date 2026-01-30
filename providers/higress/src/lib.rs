@@ -168,14 +168,9 @@ impl RootContext for TrafficCounter {
         loop {
             match dequeue_shared_queue(queue_id) {
                 Ok(Some(data)) => {
-                    if self.stream_token.is_some() {
+                    if let Some(stream_token) = self.stream_token {
                         // At this point we have a valid stream token and queue ID, so we can attempt to send any queued traffic data
-                        // unwrap is safe because we check for None above
-                        self.send_grpc_stream_message(
-                            self.stream_token.unwrap(),
-                            Some(&data),
-                            false,
-                        )
+                        self.send_grpc_stream_message(stream_token, Some(&data), false)
                     }
                     // If self.stream_token is somehow still None, we do nothing (by discarding the data) to prevent filling up the shared queue.
                 }
