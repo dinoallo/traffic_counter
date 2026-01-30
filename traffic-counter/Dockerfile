@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=/usr/local/cargo,from=rust:1.91-slim,source=/usr/l
     cargo build -p traffic-counter --release && \
     cp /workspace/target/release/traffic-counter /traffic-counter
 
-FROM gcr.io/distroless/cc-debian12:debug AS runtime
+FROM gcr.io/distroless/cc-debian13:debug AS runtime
 
 COPY --from=builder /traffic-counter /usr/local/bin/traffic-counter
 
