@@ -18,11 +18,12 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo,from=rust:1.91-slim,source=/usr/local/cargo \
     --mount=type=cache,target=target \
     cargo install --locked bpf-linker && \
-    cargo build -p traffic-counter --release
+    cargo build -p traffic-counter --release && \
+    cp /workspace/target/release/traffic-counter /traffic-counter
 
 FROM gcr.io/distroless/cc-debian12:debug AS runtime
 
-COPY --from=builder /workspace/target/release/traffic-counter /usr/local/bin/traffic-counter
+COPY --from=builder /traffic-counter /usr/local/bin/traffic-counter
 
 ENTRYPOINT ["/usr/local/bin/traffic-counter"]
 CMD ["--help"]
