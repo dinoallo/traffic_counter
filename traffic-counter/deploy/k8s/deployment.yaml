@@ -30,8 +30,6 @@ spec:
             - --export-interval-secs=10
           securityContext:
             allowPrivilegeEscalation: false
-            drop:
-              - ALL
             privileged: false
           resources:
             limits:
