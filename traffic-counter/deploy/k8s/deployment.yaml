@@ -28,6 +28,9 @@ spec:
           args:
             - run
             - --export-interval-secs=10
+          env:
+            - name: RUST_LOG
+              value: info
           securityContext:
             allowPrivilegeEscalation: false
             privileged: false
