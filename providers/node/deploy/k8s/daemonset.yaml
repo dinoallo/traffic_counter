@@ -22,7 +22,7 @@ spec:
         - operator: Exists
       containers:
         - name: traffic-node-provider
-          image: ghcr.io/dinoallo/traffic-node-provider:latest
+          image: ghcr.io/dinoallo/traffic-provider/node:latest
           imagePullPolicy: IfNotPresent
           command:
             - traffic-node-provider
