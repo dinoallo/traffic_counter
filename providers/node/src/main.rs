@@ -4,6 +4,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 
 use crate::node::NodeOptions;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+mod defaults;
 mod model;
 mod node;
 mod packet;
@@ -25,39 +26,43 @@ enum Commands {
 #[command(author, about = "Count traffic of a network interface on a node", long_about = None)]
 struct RunCommand {
     /// Address of the traffic-counter gRPC server
-    #[arg(long, default_value = "http://127.0.0.1:50051")]
+    #[arg(
+        long,
+        value_name = "SERVER_ADDR",
+        default_value = defaults::DEFAULT_SERVER_ADDR
+    )]
     server_addr: String,
 
     /// Network interface to join via AF_PACKET
-    #[arg(long, value_name = "IFACE")]
+    #[arg(long, value_name = "IFACE", default_value = defaults::DEFAULT_IFACE)]
     iface: String,
     /// Number of worker threads pulling frames from the fanout group
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, value_name = "NUMBER", default_value_t = defaults::DEFAULT_WORKERS)]
     workers: usize,
     /// Optional PACKET_FANOUT group id
-    #[arg(long, value_name = "GROUP")]
+    #[arg(long, value_name = "GROUP", default_value = None)]
     fanout_group: Option<u16>,
     /// Seconds between stat snapshots printed to stdout
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, value_name = "SECOND", default_value_t = defaults::DEFAULT_EXPORT_INTERVAL_SECS)]
     report_interval_secs: u64,
     /// Align report emissions to natural time boundaries (minute, hour, etc.)
-    #[arg(long)]
+    #[arg(long, value_name = "BOOLEAN", default_value_t = defaults::DEFAULT_EXPORT_NATURAL)]
     report_natural: bool,
     /// Size of each tpacket block (bytes)
-    #[arg(long, value_name = "BYTES", default_value_t = node::DEFAULT_BLOCK_SIZE)]
+    #[arg(long, value_name = "BYTES", default_value_t = defaults::DEFAULT_BLOCK_SIZE)]
     block_size: u32,
     /// Number of blocks provisioned for the RX ring
-    #[arg(long, value_name = "COUNT", default_value_t = node::DEFAULT_BLOCK_COUNT)]
+    #[arg(long, value_name = "COUNT", default_value_t = defaults::DEFAULT_BLOCK_COUNT)]
     block_count: u32,
     /// Size of each frame within a block (bytes)
-    #[arg(long, value_name = "BYTES", default_value_t = node::DEFAULT_FRAME_SIZE)]
+    #[arg(long, value_name = "BYTES", default_value_t = defaults::DEFAULT_FRAME_SIZE)]
     frame_size: u32,
     /// Milliseconds before an idle block is recycled
-    #[arg(long, value_name = "MILLIS", default_value_t = node::DEFAULT_BLOCK_TIMEOUT_MS)]
+    #[arg(long, value_name = "MILLIS", default_value_t = defaults::DEFAULT_BLOCK_TIMEOUT_MS)]
     block_timeout_ms: u32,
     /// File containing IPv4/IPv6 destination CIDRs to ignore (one per line)
-    #[arg(long, value_name = "PATH")]
-    ignore_file: Option<PathBuf>,
+    #[arg(long, value_name = "PATH", default_value = None)]
+    remote_whitelist: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -91,7 +96,7 @@ async fn run() -> anyhow::Result<()> {
                     frame_size: cmd.frame_size,
                     block_timeout_ms: cmd.block_timeout_ms,
                 },
-                remote_whitelist: cmd.ignore_file,
+                remote_whitelist: cmd.remote_whitelist,
             };
             let runtime = node::NodeRuntime::new(NodeOptions { config }).await?;
             runtime.run().await?;

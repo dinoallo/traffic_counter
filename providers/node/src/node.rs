@@ -27,11 +27,6 @@ use crate::{
     packet::{PacketSocket, validate_ring_config},
 };
 
-pub const DEFAULT_BLOCK_SIZE: u32 = 1 << 20; // 1 MiB
-pub const DEFAULT_BLOCK_COUNT: u32 = 64;
-pub const DEFAULT_FRAME_SIZE: u32 = 2048;
-pub const DEFAULT_BLOCK_TIMEOUT_MS: u32 = 100;
-
 // NodeOptions encapsulates all internal and external options needed to run a node
 pub struct NodeOptions {
     pub config: NodeConfig,

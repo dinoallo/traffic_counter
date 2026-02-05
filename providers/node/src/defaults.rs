@@ -1,0 +1,9 @@
+pub const DEFAULT_BLOCK_SIZE: u32 = 1 << 20; // 1 MiB
+pub const DEFAULT_BLOCK_COUNT: u32 = 64;
+pub const DEFAULT_FRAME_SIZE: u32 = 2048;
+pub const DEFAULT_BLOCK_TIMEOUT_MS: u32 = 100;
+pub const DEFAULT_EXPORT_INTERVAL_SECS: u64 = 60;
+pub const DEFAULT_EXPORT_NATURAL: bool = false;
+pub const DEFAULT_WORKERS: usize = 1;
+pub const DEFAULT_SERVER_ADDR: &str = "http://127.0.0.1:50051";
+pub const DEFAULT_IFACE: &str = "eth0";
