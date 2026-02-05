@@ -90,7 +90,7 @@ impl PacketSocket {
         &mut self,
         running: &AtomicBool,
         remote_whitelist: &AddressList,
-        local_addresslist: &AddressList,
+        host_aliases: &AddressList,
         mut on_traffic: F,
     ) -> Result<()>
     where
@@ -103,7 +103,7 @@ impl PacketSocket {
             for _ in 0..block_nr {
                 if self
                     .ring
-                    .consume_next_block(remote_whitelist, local_addresslist, &mut on_traffic)
+                    .consume_next_block(remote_whitelist, host_aliases, &mut on_traffic)
                     .await?
                 {
                     made_progress = true;
@@ -207,7 +207,7 @@ impl PacketRing {
     async fn consume_next_block<F, Fut>(
         &mut self,
         remote_whitelist: &AddressList,
-        local_addresslist: &AddressList,
+        host_aliases: &AddressList,
         on_traffic: &mut F,
     ) -> Result<bool>
     where
@@ -216,7 +216,7 @@ impl PacketRing {
     {
         let idx = self.current_block;
         self.current_block = (self.current_block + 1) % self.req.tp_block_nr.max(1);
-        self.consume_block(idx, remote_whitelist, local_addresslist, on_traffic)
+        self.consume_block(idx, remote_whitelist, host_aliases, on_traffic)
             .await
     }
 
@@ -224,7 +224,7 @@ impl PacketRing {
         &mut self,
         idx: u32,
         remote_whitelist: &AddressList,
-        local_addresslist: &AddressList,
+        host_aliases: &AddressList,
         on_traffic: &mut F,
     ) -> Result<bool>
     where
@@ -248,7 +248,7 @@ impl PacketRing {
         };
 
         let remote_whitelist_empty = remote_whitelist.is_empty();
-        let local_addresslist_empty = local_addresslist.is_empty();
+        let host_aliases_empty = host_aliases.is_empty();
         let block_size = self.block_size();
 
         // Base address for recalculating pointers inside the loop.
@@ -309,8 +309,7 @@ impl PacketRing {
             if let Some((l4_meta, traffic)) = traffic_opt {
                 let dst_allowed =
                     remote_whitelist_empty || !remote_whitelist.contains(&l4_meta.remote_ip);
-                let src_allowed =
-                    local_addresslist_empty || local_addresslist.contains(&l4_meta.local_ip);
+                let src_allowed = host_aliases_empty || host_aliases.contains(&l4_meta.local_ip);
 
                 if dst_allowed && src_allowed {
                     on_traffic(l4_meta, traffic).await;

@@ -31,6 +31,31 @@ impl AddressList {
         }
     }
 
+    pub fn from_addresses<I>(addrs: I) -> Self
+    where
+        I: IntoIterator<Item = IpAddr>,
+    {
+        let mut ipv4 = Vec::new();
+        let mut ipv6 = Vec::new();
+
+        for addr in addrs {
+            match addr {
+                IpAddr::V4(a) => {
+                    let mask = u32::MAX;
+                    let network = u32::from_be_bytes(a.octets());
+                    ipv4.push(Ipv4Net { network, mask });
+                }
+                IpAddr::V6(a) => {
+                    let mask = u128::MAX;
+                    let network = ipv6_to_u128(a);
+                    ipv6.push(Ipv6Net { network, mask });
+                }
+            }
+        }
+
+        Self { ipv4, ipv6 }
+    }
+
     pub fn from_option(path: Option<&Path>, label: &str) -> Result<Self> {
         match path {
             Some(path) => Self::from_path(path, label),

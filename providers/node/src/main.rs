@@ -58,9 +58,6 @@ struct RunCommand {
     /// File containing IPv4/IPv6 destination CIDRs to ignore (one per line)
     #[arg(long, value_name = "PATH")]
     ignore_file: Option<PathBuf>,
-    /// File containing IPv4/IPv6 source CIDRs to accept (one per line)
-    #[arg(long, value_name = "PATH")]
-    accept_source_file: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -95,9 +92,8 @@ async fn run() -> anyhow::Result<()> {
                     block_timeout_ms: cmd.block_timeout_ms,
                 },
                 remote_whitelist: cmd.ignore_file,
-                local_addresslist: cmd.accept_source_file,
             };
-            let runtime = node::NodeRuntime::new(NodeOptions { config })?;
+            let runtime = node::NodeRuntime::new(NodeOptions { config }).await?;
             runtime.run().await?;
         }
         None => {

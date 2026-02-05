@@ -1,4 +1,5 @@
 use std::{
+    net::IpAddr,
     path::PathBuf,
     sync::{
         Arc,
@@ -8,6 +9,8 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
+use futures::stream::TryStreamExt;
+use netlink_packet_route::address::AddressAttribute::{Address, Local};
 use tokio::sync::mpsc;
 use tokio::{signal, task, time};
 use tokio_stream::wrappers::ReceiverStream;
@@ -43,18 +46,17 @@ pub struct NodeConfig {
     pub fanout_group: Option<u16>,
     pub ring: RingConfig,
     pub remote_whitelist: Option<PathBuf>,
-    pub local_addresslist: Option<PathBuf>,
 }
 
 #[derive(Clone)]
 pub struct NodeRuntime {
     pub config: NodeConfig,
     remote_whitelist: Arc<AddressList>,
-    local_addresslist: Arc<AddressList>,
+    host_aliases: Arc<AddressList>,
 }
 
 impl NodeRuntime {
-    pub fn new(opts: NodeOptions) -> Result<Self> {
+    pub async fn new(opts: NodeOptions) -> Result<Self> {
         let NodeOptions { config } = opts;
         if config.workers == 0 {
             return Err(anyhow!("workers must be at least 1"));
@@ -65,15 +67,22 @@ impl NodeRuntime {
             config.remote_whitelist.as_deref(),
             "remote whitelist",
         )?);
-        let local_addresslist = Arc::new(AddressList::from_option(
-            config.local_addresslist.as_deref(),
-            "local address list",
-        )?);
+
+        let iface_addrs = collect_iface_addrs(&config.iface)
+            .await
+            .with_context(|| format!("failed to resolve addresses for iface {}", config.iface))?;
+        if iface_addrs.is_empty() {
+            return Err(anyhow!(format!(
+                "interface {} has no usable addresses",
+                config.iface
+            )));
+        }
+        let host_aliases = Arc::new(AddressList::from_addresses(iface_addrs));
 
         Ok(Self {
             config,
             remote_whitelist,
-            local_addresslist,
+            host_aliases,
         })
     }
 
@@ -182,7 +191,7 @@ impl NodeRuntime {
             .pump(
                 &running,
                 &self.remote_whitelist,
-                &self.local_addresslist,
+                &self.host_aliases,
                 move |_, traffic| {
                     let tx = stable_tx.clone();
                     async move {
@@ -205,6 +214,42 @@ impl NodeRuntime {
             )
             .await
     }
+}
+
+async fn collect_iface_addrs(iface: &str) -> Result<Vec<IpAddr>> {
+    let (connection, handle, _) =
+        rtnetlink::new_connection().context("failed to create rtnetlink connection")?;
+    tokio::spawn(connection);
+    let mut addrs = Vec::new();
+    let mut links = handle.link().get().match_name(iface.to_string()).execute();
+    let index = if let Some(link) = links
+        .try_next()
+        .await
+        .context("failed to get link information")?
+    {
+        link.header.index
+    } else {
+        return Err(anyhow!("interface {} not found", iface));
+    };
+    let mut messages = handle
+        .address()
+        .get()
+        .set_link_index_filter(index) // This is the crucial filtering step
+        .execute();
+
+    while let Some(msg) = messages.try_next().await? {
+        let attrs = msg.attributes;
+        for attr in attrs {
+            match attr {
+                Address(ip_addr) | Local(ip_addr) => {
+                    info!("Found address on {}: {}", iface, ip_addr);
+                    addrs.push(ip_addr);
+                }
+                _ => continue,
+            }
+        }
+    }
+    Ok(addrs)
 }
 
 struct WorkerContext {
