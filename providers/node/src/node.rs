@@ -16,6 +16,7 @@ use tonic::transport::Channel;
 use api::proto::trafficcounter::v1::{
     IngestTrafficRequest, traffic_ingestor_client::TrafficIngestorClient,
 };
+use tracing::{debug, info};
 
 pub use crate::packet::RingConfig;
 use crate::{
@@ -80,10 +81,16 @@ impl NodeRuntime {
         let running = Arc::new(AtomicBool::new(true));
         let config = &self.config;
 
+        info!(
+            "Connecting to traffic-counter server at {}",
+            config.server_addr
+        );
         let client = TrafficIngestorClient::connect(config.server_addr.clone())
             .await
             .context("failed to connect to traffic-counter server")?;
+        info!("Connected to traffic-counter server");
 
+        info!("Starting node on iface {}", config.iface);
         let mut handles = Vec::with_capacity(config.workers);
         for worker_id in 0..config.workers {
             let running_clone = running.clone();
@@ -99,6 +106,7 @@ impl NodeRuntime {
                 runtime.worker_loop(worker_id, running_clone, ctx).await
             }));
         }
+        info!("Node started with {} workers", config.workers);
 
         signal::ctrl_c()
             .await
@@ -188,6 +196,9 @@ impl NodeRuntime {
                         if (tx.send(req).await).is_err() {
                             // Stable receiver closed (shouldn't happen unless manager task panics)
                             eprintln!("Worker {worker_id}: Stable channel closed unexpectedly");
+                        } else {
+                            // Successfully sent
+                            debug!("Worker {worker_id}: Sent traffic data");
                         }
                     }
                 },

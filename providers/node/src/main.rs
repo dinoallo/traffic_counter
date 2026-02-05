@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 
 use crate::node::NodeOptions;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 mod model;
 mod node;
 mod packet;
@@ -64,6 +65,10 @@ struct RunCommand {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::from_default_env()) // Reads RUST_LOG
+        .init();
     if let Err(err) = run().await {
         eprintln!("node provider error: {err:?}");
         std::process::exit(1);

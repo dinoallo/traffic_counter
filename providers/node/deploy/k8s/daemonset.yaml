@@ -25,13 +25,13 @@ spec:
           image: ghcr.io/dinoallo/traffic-provider/node:latest
           imagePullPolicy: IfNotPresent
           command:
-            - traffic-node-provider
+            - node-provider
           args:
             - run
             - --iface=eth0
             - --ignore-file=/etc/traffic-node-provider/ignore.txt
             - --accept-source-file=/etc/traffic-node-provider/accept.txt
-            - --server_addr=traffic-counter.traffic-counter.svc.cluster.local:50051
+            - --server-addr=traffic-counter.traffic-counter.svc.cluster.local:50051
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
