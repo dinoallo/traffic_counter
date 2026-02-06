@@ -51,11 +51,11 @@ pub struct ExportConfig {
     pub prometheus_listen_addr: SocketAddr,
 
     /// Whether to export receive-side metrics (bytes/packets)
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = false)]
     pub export_rx_metrics: bool,
 
     /// Whether to export transmit-side metrics (bytes/packets)
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = false)]
     pub export_tx_metrics: bool,
 
     /// Username required to access the Prometheus metrics endpoint
