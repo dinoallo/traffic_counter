@@ -31,6 +31,17 @@ spec:
           env:
             - name: RUST_LOG
               value: info
+            # You should set these environment variables in your cluster, using a Kubernetes Secret.
+            - name: PROMETHEUS_METRICS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: traffic-counter
+                  key: prometheus_metrics_username
+            - name: PROMETHEUS_METRICS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: traffic-counter
+                  key: prometheus_metrics_password
           securityContext:
             allowPrivilegeEscalation: false
             privileged: false
