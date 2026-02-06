@@ -18,7 +18,10 @@ use prometheus::{Encoder, IntCounterVec, Opts, Registry, TextEncoder};
 use tokio::{sync::Mutex, task::JoinHandle, time};
 use tracing::{error, info};
 
-use crate::{label::Label, store::TrafficDump};
+use crate::{
+    label::{ClusterLabel, HttpGatewayLabel, Label, NodePortLabel},
+    store::TrafficDump,
+};
 
 /// Trait representing anything that can export itself into another form.
 pub trait Export: Send + Sync {
@@ -80,6 +83,16 @@ impl LogExporter {
     }
 }
 
+const PROM_LABEL_DIMENSIONS: [&str; 6] = [
+    "type",
+    "namespace",
+    "service_name",
+    "pod_name",
+    "host",
+    "port",
+];
+const PROM_LABEL_DIMENSION_COUNT: usize = PROM_LABEL_DIMENSIONS.len();
+
 pub struct PrometheusExporter {
     traffic_dumper: Arc<dyn TrafficDump>,
     registry: Registry,
@@ -115,51 +128,61 @@ impl PrometheusExporter {
             &registry,
             "traffic_nodeport_rx_bytes_total",
             "Total received bytes observed for nodeport traffic",
+            &PROM_LABEL_DIMENSIONS,
         )?;
         let nodeport_rx_packets = Self::register_counter(
             &registry,
             "traffic_nodeport_rx_packets_total",
             "Total received packets observed for nodeport traffic",
+            &PROM_LABEL_DIMENSIONS,
         )?;
         let nodeport_tx_bytes = Self::register_counter(
             &registry,
             "traffic_nodeport_tx_bytes_total",
             "Total transmitted bytes observed for nodeport traffic",
+            &PROM_LABEL_DIMENSIONS,
         )?;
         let nodeport_tx_packets = Self::register_counter(
             &registry,
             "traffic_nodeport_tx_packets_total",
             "Total transmitted packets observed for nodeport traffic",
+            &PROM_LABEL_DIMENSIONS,
         )?;
         let cluster_rx_bytes = Self::register_counter(
             &registry,
             "traffic_cluster_rx_bytes_total",
             "Total received bytes observed for cluster traffic",
+            &PROM_LABEL_DIMENSIONS,
         )?;
         let cluster_rx_packets = Self::register_counter(
             &registry,
             "traffic_cluster_rx_packets_total",
             "Total received packets observed for cluster traffic",
+            &PROM_LABEL_DIMENSIONS,
         )?;
         let cluster_tx_bytes = Self::register_counter(
             &registry,
             "traffic_cluster_tx_bytes_total",
             "Total transmitted bytes observed for cluster traffic",
+            &PROM_LABEL_DIMENSIONS,
         )?;
         let cluster_tx_packets = Self::register_counter(
             &registry,
             "traffic_cluster_tx_packets_total",
             "Total transmitted packets observed for cluster traffic",
+            &PROM_LABEL_DIMENSIONS,
         )?;
         let http_request_bytes = Self::register_counter(
             &registry,
             "traffic_http_request_bytes_total",
             "Total HTTP request bytes observed at the gateway",
+            &PROM_LABEL_DIMENSIONS,
         )?;
         let http_response_bytes = Self::register_counter(
             &registry,
             "traffic_http_response_bytes_total",
             "Total HTTP response bytes observed at the gateway",
+            &PROM_LABEL_DIMENSIONS,
         )?;
 
         Ok(Self {
@@ -235,53 +258,104 @@ impl PrometheusExporter {
 
     fn observe_records(&self, records: Vec<(Label, Traffic)>) {
         for (label, traffic) in records {
-            let label_string = label.to_string();
-            let label_slice = [&label_string[..]];
+            let label_values = Self::build_label_values(&label);
+            let label_refs: Vec<&str> = label_values.iter().map(|s| s.as_str()).collect();
             match traffic {
                 Traffic::NodePort(data) => {
                     self.nodeport_rx_bytes
-                        .with_label_values(&label_slice)
+                        .with_label_values(&label_refs)
                         .inc_by(data.rx_bytes);
                     self.nodeport_rx_packets
-                        .with_label_values(&label_slice)
+                        .with_label_values(&label_refs)
                         .inc_by(data.rx_packets);
                     self.nodeport_tx_bytes
-                        .with_label_values(&label_slice)
+                        .with_label_values(&label_refs)
                         .inc_by(data.tx_bytes);
                     self.nodeport_tx_packets
-                        .with_label_values(&label_slice)
+                        .with_label_values(&label_refs)
                         .inc_by(data.tx_packets);
                 }
                 Traffic::HttpGateway(data) => {
                     self.http_request_bytes
-                        .with_label_values(&label_slice)
+                        .with_label_values(&label_refs)
                         .inc_by(data.request_bytes);
                     self.http_response_bytes
-                        .with_label_values(&label_slice)
+                        .with_label_values(&label_refs)
                         .inc_by(data.response_bytes);
                 }
                 Traffic::Cluster(data) => {
                     self.cluster_rx_bytes
-                        .with_label_values(&label_slice)
+                        .with_label_values(&label_refs)
                         .inc_by(data.rx_bytes);
                     self.cluster_rx_packets
-                        .with_label_values(&label_slice)
+                        .with_label_values(&label_refs)
                         .inc_by(data.rx_packets);
                     self.cluster_tx_bytes
-                        .with_label_values(&label_slice)
+                        .with_label_values(&label_refs)
                         .inc_by(data.tx_bytes);
                     self.cluster_tx_packets
-                        .with_label_values(&label_slice)
+                        .with_label_values(&label_refs)
                         .inc_by(data.tx_packets);
                 }
             }
         }
     }
 
-    fn register_counter(registry: &Registry, name: &str, help: &str) -> Result<IntCounterVec> {
-        let counter = IntCounterVec::new(Opts::new(name, help), &["label"])?;
+    fn register_counter(
+        registry: &Registry,
+        name: &str,
+        help: &str,
+        label_names: &[&str],
+    ) -> Result<IntCounterVec> {
+        let counter = IntCounterVec::new(Opts::new(name, help), label_names)?;
         registry.register(Box::new(counter.clone()))?;
         Ok(counter)
+    }
+
+    fn build_label_values(label: &Label) -> [String; PROM_LABEL_DIMENSION_COUNT] {
+        let mut values = [
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ];
+
+        match label {
+            Label::NodePort(node_label) => match node_label {
+                NodePortLabel::Reserved(reserved) => {
+                    values[0] = "nodeport_reserved".into();
+                    values[5] = reserved.port.to_string();
+                }
+                NodePortLabel::Dynamic(dynamic) => {
+                    values[0] = "nodeport_dynamic".into();
+                    values[5] = dynamic.port.to_string();
+                }
+                NodePortLabel::K8sNode(k8s) => {
+                    values[0] = "nodeport_k8s_node".into();
+                    values[1] = k8s.namespace.clone();
+                    values[2] = k8s.service_name.clone();
+                }
+            },
+            Label::HttpGateway(gateway_label) => match gateway_label {
+                HttpGatewayLabel::K8sIngress(ingress) => {
+                    values[0] = "httpgateway_k8s_ingress".into();
+                    values[1] = ingress.namespace.clone();
+                    values[2] = ingress.service_name.clone();
+                    values[4] = ingress.host.clone();
+                }
+            },
+            Label::Cluster(cluster_label) => match cluster_label {
+                ClusterLabel::K8sPod(pod) => {
+                    values[0] = "cluster_k8s_pod".into();
+                    values[1] = pod.namespace.clone();
+                    values[3] = pod.pod_name.clone();
+                }
+            },
+        }
+
+        values
     }
 
     async fn serve_metrics(registry: Registry, addr: SocketAddr) -> Result<()> {
