@@ -29,9 +29,8 @@ spec:
           args:
             - run
             - --iface=eth0
-            - --ignore-file=/etc/traffic-node-provider/ignore.txt
-            - --accept-source-file=/etc/traffic-node-provider/accept.txt
-            - --server-addr=traffic-counter.traffic-counter.svc.cluster.local:50051
+            - --remote-whitelist=/etc/traffic-node-provider/remote_whitelist.txt
+            - --server-addr=http://traffic-counter.traffic-counter.svc.cluster.local:50051
           env:
             - name: RUST_LOG
               value: info

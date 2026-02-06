@@ -6,11 +6,7 @@ metadata:
     app.kubernetes.io/name: traffic-node-provider
     app.kubernetes.io/part-of: traffic-counter
 data:
-  ignore.txt: |-
+  remote_whitelist.txt: |-
     # Example prefixes to ignore
     10.0.0.0/8
     192.168.0.0/16
-  accept.txt: |-
-    # Example prefixes explicitly accepted
-    203.0.113.0/24
-    2001:db8::/32
