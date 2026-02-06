@@ -477,10 +477,10 @@ impl PrometheusExporter {
                 .unwrap_or_else(|_| Response::new(Body::empty()));
         }
 
-        if let Some(auth) = metrics_auth.as_ref() {
-            if let Err(response) = Self::validate_basic_auth(&req, auth) {
-                return response;
-            }
+        if let Some(auth) = metrics_auth.as_ref()
+            && !Self::is_basic_auth_valid(&req, auth)
+        {
+            return Self::unauthorized_response();
         }
 
         let encoder = TextEncoder::new();
@@ -506,15 +506,15 @@ impl PrometheusExporter {
             })
     }
 
-    fn validate_basic_auth(req: &Request<Body>, auth: &MetricsAuth) -> Result<(), Response<Body>> {
+    fn is_basic_auth_valid(req: &Request<Body>, auth: &MetricsAuth) -> bool {
         let header_value = match req.headers().get(AUTHORIZATION) {
             Some(value) => value,
-            None => return Err(Self::unauthorized_response()),
+            None => return false,
         };
 
         let header_str = match header_value.to_str() {
             Ok(value) => value.trim(),
-            Err(_) => return Err(Self::unauthorized_response()),
+            Err(_) => return false,
         };
 
         let mut parts = header_str.splitn(2, ' ');
@@ -522,28 +522,24 @@ impl PrometheusExporter {
         let encoded = parts.next().unwrap_or("");
 
         if !scheme.eq_ignore_ascii_case("basic") || encoded.is_empty() {
-            return Err(Self::unauthorized_response());
+            return false;
         }
 
         let decoded = match general_purpose::STANDARD.decode(encoded) {
             Ok(bytes) => bytes,
-            Err(_) => return Err(Self::unauthorized_response()),
+            Err(_) => return false,
         };
 
         let decoded_str = match String::from_utf8(decoded) {
             Ok(s) => s,
-            Err(_) => return Err(Self::unauthorized_response()),
+            Err(_) => return false,
         };
 
         let mut credentials = decoded_str.splitn(2, ':');
         let username = credentials.next().unwrap_or("");
         let password = credentials.next().unwrap_or("");
 
-        if username == auth.username && password == auth.password {
-            Ok(())
-        } else {
-            Err(Self::unauthorized_response())
-        }
+        username == auth.username && password == auth.password
     }
 
     fn unauthorized_response() -> Response<Body> {
