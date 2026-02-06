@@ -15,3 +15,7 @@ spec:
       port: 50051
       targetPort: 50051
       protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+      protocol: TCP

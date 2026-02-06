@@ -1,4 +1,5 @@
 use std::{
+    net::SocketAddr,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -7,10 +8,17 @@ use std::{
 };
 
 use anyhow::Result;
-use tokio::time;
-use tracing::info;
+use api::Traffic;
+use hyper::{
+    Body, Request, Response, Server, StatusCode,
+    header::CONTENT_TYPE,
+    service::{make_service_fn, service_fn},
+};
+use prometheus::{Encoder, IntCounterVec, Opts, Registry, TextEncoder};
+use tokio::{sync::Mutex, task::JoinHandle, time};
+use tracing::{error, info};
 
-use crate::store::TrafficDump;
+use crate::{label::Label, store::TrafficDump};
 
 /// Trait representing anything that can export itself into another form.
 pub trait Export: Send + Sync {
@@ -69,6 +77,260 @@ impl LogExporter {
             }
         }
         Ok(())
+    }
+}
+
+pub struct PrometheusExporter {
+    traffic_dumper: Arc<dyn TrafficDump>,
+    registry: Registry,
+    nodeport_rx_bytes: IntCounterVec,
+    nodeport_rx_packets: IntCounterVec,
+    nodeport_tx_bytes: IntCounterVec,
+    nodeport_tx_packets: IntCounterVec,
+    cluster_rx_bytes: IntCounterVec,
+    cluster_rx_packets: IntCounterVec,
+    cluster_tx_bytes: IntCounterVec,
+    cluster_tx_packets: IntCounterVec,
+    http_request_bytes: IntCounterVec,
+    http_response_bytes: IntCounterVec,
+    http_addr: SocketAddr,
+    server_task: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Export for PrometheusExporter {
+    async fn run(&self, running: Arc<AtomicBool>, interval: Duration, natural: bool) -> Result<()> {
+        self.ensure_server().await;
+        if natural {
+            self.run_at_natural_interval(running, interval).await
+        } else {
+            self.run_at_interval(running, interval).await
+        }
+    }
+}
+
+impl PrometheusExporter {
+    pub fn new(traffic_dumper: Arc<dyn TrafficDump>, http_addr: SocketAddr) -> Result<Self> {
+        let registry = Registry::new();
+        let nodeport_rx_bytes = Self::register_counter(
+            &registry,
+            "traffic_nodeport_rx_bytes_total",
+            "Total received bytes observed for nodeport traffic",
+        )?;
+        let nodeport_rx_packets = Self::register_counter(
+            &registry,
+            "traffic_nodeport_rx_packets_total",
+            "Total received packets observed for nodeport traffic",
+        )?;
+        let nodeport_tx_bytes = Self::register_counter(
+            &registry,
+            "traffic_nodeport_tx_bytes_total",
+            "Total transmitted bytes observed for nodeport traffic",
+        )?;
+        let nodeport_tx_packets = Self::register_counter(
+            &registry,
+            "traffic_nodeport_tx_packets_total",
+            "Total transmitted packets observed for nodeport traffic",
+        )?;
+        let cluster_rx_bytes = Self::register_counter(
+            &registry,
+            "traffic_cluster_rx_bytes_total",
+            "Total received bytes observed for cluster traffic",
+        )?;
+        let cluster_rx_packets = Self::register_counter(
+            &registry,
+            "traffic_cluster_rx_packets_total",
+            "Total received packets observed for cluster traffic",
+        )?;
+        let cluster_tx_bytes = Self::register_counter(
+            &registry,
+            "traffic_cluster_tx_bytes_total",
+            "Total transmitted bytes observed for cluster traffic",
+        )?;
+        let cluster_tx_packets = Self::register_counter(
+            &registry,
+            "traffic_cluster_tx_packets_total",
+            "Total transmitted packets observed for cluster traffic",
+        )?;
+        let http_request_bytes = Self::register_counter(
+            &registry,
+            "traffic_http_request_bytes_total",
+            "Total HTTP request bytes observed at the gateway",
+        )?;
+        let http_response_bytes = Self::register_counter(
+            &registry,
+            "traffic_http_response_bytes_total",
+            "Total HTTP response bytes observed at the gateway",
+        )?;
+
+        Ok(Self {
+            traffic_dumper,
+            registry,
+            nodeport_rx_bytes,
+            nodeport_rx_packets,
+            nodeport_tx_bytes,
+            nodeport_tx_packets,
+            cluster_rx_bytes,
+            cluster_rx_packets,
+            cluster_tx_bytes,
+            cluster_tx_packets,
+            http_request_bytes,
+            http_response_bytes,
+            http_addr,
+            server_task: Mutex::new(None),
+        })
+    }
+
+    async fn ensure_server(&self) {
+        let mut guard = self.server_task.lock().await;
+        if guard.is_some() {
+            return;
+        }
+
+        let registry = self.registry.clone();
+        let addr = self.http_addr;
+        let handle = tokio::spawn(async move {
+            if let Err(err) = Self::serve_metrics(registry, addr).await {
+                error!(%addr, "Prometheus metrics server terminated: {err:?}");
+            }
+        });
+        *guard = Some(handle);
+    }
+
+    async fn run_at_interval(&self, running: Arc<AtomicBool>, interval: Duration) -> Result<()> {
+        let mut ticker = time::interval(interval);
+        loop {
+            ticker.tick().await;
+            if !running.load(Ordering::Relaxed) {
+                break;
+            }
+            self.export_once()?;
+        }
+        Ok(())
+    }
+
+    async fn run_at_natural_interval(
+        &self,
+        running: Arc<AtomicBool>,
+        interval: Duration,
+    ) -> Result<()> {
+        loop {
+            let wait = duration_until_next_boundary(interval);
+            time::sleep(wait).await;
+            if !running.load(Ordering::Relaxed) {
+                break;
+            }
+            self.export_once()?;
+        }
+        Ok(())
+    }
+
+    fn export_once(&self) -> Result<()> {
+        let records = self.traffic_dumper.dump();
+        if records.is_empty() {
+            return Ok(());
+        }
+        self.observe_records(records);
+        Ok(())
+    }
+
+    fn observe_records(&self, records: Vec<(Label, Traffic)>) {
+        for (label, traffic) in records {
+            let label_string = label.to_string();
+            let label_slice = [&label_string[..]];
+            match traffic {
+                Traffic::NodePort(data) => {
+                    self.nodeport_rx_bytes
+                        .with_label_values(&label_slice)
+                        .inc_by(data.rx_bytes);
+                    self.nodeport_rx_packets
+                        .with_label_values(&label_slice)
+                        .inc_by(data.rx_packets);
+                    self.nodeport_tx_bytes
+                        .with_label_values(&label_slice)
+                        .inc_by(data.tx_bytes);
+                    self.nodeport_tx_packets
+                        .with_label_values(&label_slice)
+                        .inc_by(data.tx_packets);
+                }
+                Traffic::HttpGateway(data) => {
+                    self.http_request_bytes
+                        .with_label_values(&label_slice)
+                        .inc_by(data.request_bytes);
+                    self.http_response_bytes
+                        .with_label_values(&label_slice)
+                        .inc_by(data.response_bytes);
+                }
+                Traffic::Cluster(data) => {
+                    self.cluster_rx_bytes
+                        .with_label_values(&label_slice)
+                        .inc_by(data.rx_bytes);
+                    self.cluster_rx_packets
+                        .with_label_values(&label_slice)
+                        .inc_by(data.rx_packets);
+                    self.cluster_tx_bytes
+                        .with_label_values(&label_slice)
+                        .inc_by(data.tx_bytes);
+                    self.cluster_tx_packets
+                        .with_label_values(&label_slice)
+                        .inc_by(data.tx_packets);
+                }
+            }
+        }
+    }
+
+    fn register_counter(registry: &Registry, name: &str, help: &str) -> Result<IntCounterVec> {
+        let counter = IntCounterVec::new(Opts::new(name, help), &["label"])?;
+        registry.register(Box::new(counter.clone()))?;
+        Ok(counter)
+    }
+
+    async fn serve_metrics(registry: Registry, addr: SocketAddr) -> Result<()> {
+        let make_service = make_service_fn(move |_| {
+            let registry = registry.clone();
+            async move {
+                Ok::<_, hyper::Error>(service_fn(move |req| {
+                    let registry = registry.clone();
+                    async move {
+                        Ok::<_, hyper::Error>(Self::build_metrics_response(registry, req).await)
+                    }
+                }))
+            }
+        });
+
+        info!(%addr, "Prometheus metrics server listening");
+        Server::bind(&addr).serve(make_service).await?;
+        Ok(())
+    }
+
+    async fn build_metrics_response(registry: Registry, req: Request<Body>) -> Response<Body> {
+        if req.uri().path() != "/metrics" {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("not found"))
+                .unwrap_or_else(|_| Response::new(Body::empty()));
+        }
+
+        let encoder = TextEncoder::new();
+        let metric_families = registry.gather();
+        let mut buffer = Vec::new();
+        let status = match encoder.encode(&metric_families, &mut buffer) {
+            Ok(()) => StatusCode::OK,
+            Err(err) => {
+                buffer = format!("failed to encode metrics: {err}").into_bytes();
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        };
+
+        Response::builder()
+            .status(status)
+            .header(CONTENT_TYPE, encoder.format_type())
+            .body(Body::from(buffer))
+            .unwrap_or_else(|_| {
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from("internal error"))
+                    .expect("failed to build fallback response")
+            })
     }
 }
 
