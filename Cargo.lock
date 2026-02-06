@@ -2468,6 +2468,7 @@ dependencies = [
  "async-trait",
  "aya",
  "aya-build",
+ "base64 0.21.7",
  "cargo_metadata",
  "chrono",
  "clap",

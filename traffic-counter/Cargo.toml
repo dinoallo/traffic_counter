@@ -25,6 +25,7 @@ serde_json = { version = "1.0" }
 libc = { workspace = true }
 hyper = { version = "0.14", features = ["full"] }
 prometheus = "0.13"
+base64 = "0.21"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 async-trait = "0.1"
 kube = { version = "0.90.0", default-features = false, features = ["client", "rustls-tls", "runtime"] }

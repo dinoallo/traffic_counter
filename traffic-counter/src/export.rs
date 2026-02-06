@@ -9,10 +9,11 @@ use std::{
 
 use anyhow::Result;
 use api::Traffic;
+use base64::{Engine as _, engine::general_purpose};
 use clap::{Args, ValueEnum};
 use hyper::{
     Body, Request, Response, Server, StatusCode,
-    header::CONTENT_TYPE,
+    header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE},
     service::{make_service_fn, service_fn},
 };
 use prometheus::{Encoder, IntCounterVec, Opts, Registry, TextEncoder};
@@ -56,6 +57,22 @@ pub struct ExportConfig {
     /// Whether to export transmit-side metrics (bytes/packets)
     #[arg(long, default_value_t = true)]
     pub export_tx_metrics: bool,
+
+    /// Username required to access the Prometheus metrics endpoint
+    #[arg(
+        long,
+        env = "PROMETHEUS_METRICS_USERNAME",
+        requires = "metrics_password"
+    )]
+    pub metrics_username: Option<String>,
+
+    /// Password required to access the Prometheus metrics endpoint
+    #[arg(
+        long,
+        env = "PROMETHEUS_METRICS_PASSWORD",
+        requires = "metrics_username"
+    )]
+    pub metrics_password: Option<String>,
 }
 
 #[derive(Clone)]
@@ -122,6 +139,12 @@ const PROM_LABEL_DIMENSIONS: [&str; 6] = [
 ];
 const PROM_LABEL_DIMENSION_COUNT: usize = PROM_LABEL_DIMENSIONS.len();
 
+#[derive(Clone, Debug)]
+struct MetricsAuth {
+    username: String,
+    password: String,
+}
+
 pub struct PrometheusExporter {
     traffic_dumper: Arc<dyn TrafficDump>,
     registry: Registry,
@@ -138,6 +161,7 @@ pub struct PrometheusExporter {
     export_rx_metrics: bool,
     export_tx_metrics: bool,
     http_addr: SocketAddr,
+    metrics_auth: Option<MetricsAuth>,
     server_task: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -158,6 +182,7 @@ impl PrometheusExporter {
         http_addr: SocketAddr,
         export_rx_metrics: bool,
         export_tx_metrics: bool,
+        metrics_auth: Option<(String, String)>,
     ) -> Result<Self> {
         let registry = Registry::new();
         let nodeport_rx_bytes = Self::register_counter(
@@ -221,6 +246,9 @@ impl PrometheusExporter {
             &PROM_LABEL_DIMENSIONS,
         )?;
 
+        let metrics_auth =
+            metrics_auth.map(|(username, password)| MetricsAuth { username, password });
+
         Ok(Self {
             traffic_dumper,
             registry,
@@ -237,6 +265,7 @@ impl PrometheusExporter {
             export_rx_metrics,
             export_tx_metrics,
             http_addr,
+            metrics_auth,
             server_task: Mutex::new(None),
         })
     }
@@ -249,8 +278,9 @@ impl PrometheusExporter {
 
         let registry = self.registry.clone();
         let addr = self.http_addr;
+        let metrics_auth = self.metrics_auth.clone();
         let handle = tokio::spawn(async move {
-            if let Err(err) = Self::serve_metrics(registry, addr).await {
+            if let Err(err) = Self::serve_metrics(registry, addr, metrics_auth).await {
                 error!(%addr, "Prometheus metrics server terminated: {err:?}");
             }
         });
@@ -408,14 +438,23 @@ impl PrometheusExporter {
         values
     }
 
-    async fn serve_metrics(registry: Registry, addr: SocketAddr) -> Result<()> {
+    async fn serve_metrics(
+        registry: Registry,
+        addr: SocketAddr,
+        metrics_auth: Option<MetricsAuth>,
+    ) -> Result<()> {
+        let metrics_auth = metrics_auth.clone();
         let make_service = make_service_fn(move |_| {
             let registry = registry.clone();
+            let metrics_auth = metrics_auth.clone();
             async move {
                 Ok::<_, hyper::Error>(service_fn(move |req| {
                     let registry = registry.clone();
+                    let metrics_auth = metrics_auth.clone();
                     async move {
-                        Ok::<_, hyper::Error>(Self::build_metrics_response(registry, req).await)
+                        Ok::<_, hyper::Error>(
+                            Self::build_metrics_response(registry, req, metrics_auth).await,
+                        )
                     }
                 }))
             }
@@ -426,12 +465,22 @@ impl PrometheusExporter {
         Ok(())
     }
 
-    async fn build_metrics_response(registry: Registry, req: Request<Body>) -> Response<Body> {
+    async fn build_metrics_response(
+        registry: Registry,
+        req: Request<Body>,
+        metrics_auth: Option<MetricsAuth>,
+    ) -> Response<Body> {
         if req.uri().path() != "/metrics" {
             return Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Body::from("not found"))
                 .unwrap_or_else(|_| Response::new(Body::empty()));
+        }
+
+        if let Some(auth) = metrics_auth.as_ref() {
+            if let Err(response) = Self::validate_basic_auth(&req, auth) {
+                return response;
+            }
         }
 
         let encoder = TextEncoder::new();
@@ -455,6 +504,54 @@ impl PrometheusExporter {
                     .body(Body::from("internal error"))
                     .expect("failed to build fallback response")
             })
+    }
+
+    fn validate_basic_auth(req: &Request<Body>, auth: &MetricsAuth) -> Result<(), Response<Body>> {
+        let header_value = match req.headers().get(AUTHORIZATION) {
+            Some(value) => value,
+            None => return Err(Self::unauthorized_response()),
+        };
+
+        let header_str = match header_value.to_str() {
+            Ok(value) => value.trim(),
+            Err(_) => return Err(Self::unauthorized_response()),
+        };
+
+        let mut parts = header_str.splitn(2, ' ');
+        let scheme = parts.next().unwrap_or("");
+        let encoded = parts.next().unwrap_or("");
+
+        if !scheme.eq_ignore_ascii_case("basic") || encoded.is_empty() {
+            return Err(Self::unauthorized_response());
+        }
+
+        let decoded = match general_purpose::STANDARD.decode(encoded) {
+            Ok(bytes) => bytes,
+            Err(_) => return Err(Self::unauthorized_response()),
+        };
+
+        let decoded_str = match String::from_utf8(decoded) {
+            Ok(s) => s,
+            Err(_) => return Err(Self::unauthorized_response()),
+        };
+
+        let mut credentials = decoded_str.splitn(2, ':');
+        let username = credentials.next().unwrap_or("");
+        let password = credentials.next().unwrap_or("");
+
+        if username == auth.username && password == auth.password {
+            Ok(())
+        } else {
+            Err(Self::unauthorized_response())
+        }
+    }
+
+    fn unauthorized_response() -> Response<Body> {
+        Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header(WWW_AUTHENTICATE, r#"Basic realm="metrics""#)
+            .body(Body::from("unauthorized"))
+            .unwrap_or_else(|_| Response::new(Body::from("unauthorized")))
     }
 }
 

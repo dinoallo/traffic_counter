@@ -91,11 +91,19 @@ async fn run() -> Result<()> {
                     });
                 }
                 ExportMode::Prometheus => {
+                    let metrics_auth = args
+                        .export_config
+                        .metrics_username
+                        .as_ref()
+                        .zip(args.export_config.metrics_password.as_ref())
+                        .map(|(username, password)| (username.clone(), password.clone()));
+
                     let exporter = export::PrometheusExporter::new(
                         traffic_dumper.clone(),
                         args.export_config.prometheus_listen_addr,
                         args.export_config.export_rx_metrics,
                         args.export_config.export_tx_metrics,
+                        metrics_auth,
                     )?;
                     let running_clone = running.clone();
                     tokio::spawn(async move {
