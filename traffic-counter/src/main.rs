@@ -1,12 +1,11 @@
-use std::net::SocketAddr;
 use std::process::exit;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use crate::export::Export;
+use crate::export::{Export, ExportMode};
 use anyhow::Result;
-use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
@@ -37,12 +36,6 @@ enum Commands {
     Run(RunArgs),
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
-enum ExportMode {
-    Log,
-    Prometheus,
-}
-
 #[derive(Args)]
 struct VersionCommand;
 
@@ -51,18 +44,8 @@ struct RunArgs {
     #[command(flatten)]
     serve_config: serve::ServeConfig,
 
-    //TODO: merge the following export-related args into a separate ExportConfig struct
-    /// Export interval in seconds
-    #[arg(long, default_value = "5")]
-    export_interval_secs: u64,
-
-    /// Exporter backend to use
-    #[arg(long, value_enum, default_value = "log")]
-    export_mode: ExportMode,
-
-    /// Address for the Prometheus exporter to listen on
-    #[arg(long, default_value = "0.0.0.0:9090")]
-    prometheus_listen_addr: SocketAddr,
+    #[command(flatten)]
+    export_config: export::ExportConfig,
 }
 
 #[tokio::main]
@@ -95,9 +78,9 @@ async fn run() -> Result<()> {
             let traffic_dumper: Arc<dyn store::TrafficDump> = aggregator.clone();
 
             let running = Arc::new(AtomicBool::new(true));
-            let interval = Duration::from_secs(args.export_interval_secs);
+            let interval = Duration::from_secs(args.export_config.export_interval_secs);
 
-            match args.export_mode {
+            match args.export_config.export_mode {
                 ExportMode::Log => {
                     let exporter = export::LogExporter::new(traffic_dumper.clone());
                     let running_clone = running.clone();
@@ -110,7 +93,9 @@ async fn run() -> Result<()> {
                 ExportMode::Prometheus => {
                     let exporter = export::PrometheusExporter::new(
                         traffic_dumper.clone(),
-                        args.prometheus_listen_addr,
+                        args.export_config.prometheus_listen_addr,
+                        args.export_config.export_rx_metrics,
+                        args.export_config.export_tx_metrics,
                     )?;
                     let running_clone = running.clone();
                     tokio::spawn(async move {

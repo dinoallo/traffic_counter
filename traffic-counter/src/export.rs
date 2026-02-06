@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::Result;
 use api::Traffic;
+use clap::{Args, ValueEnum};
 use hyper::{
     Body, Request, Response, Server, StatusCode,
     header::CONTENT_TYPE,
@@ -27,6 +28,34 @@ use crate::{
 pub trait Export: Send + Sync {
     /// Perform the export and return the resulting value.
     async fn run(&self, running: Arc<AtomicBool>, interval: Duration, natural: bool) -> Result<()>;
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum ExportMode {
+    Log,
+    Prometheus,
+}
+#[derive(Args)]
+pub struct ExportConfig {
+    /// Export interval in seconds
+    #[arg(long, default_value = "5")]
+    pub export_interval_secs: u64,
+
+    /// Exporter backend to use
+    #[arg(long, value_enum, default_value = "log")]
+    pub export_mode: ExportMode,
+
+    /// Address for the Prometheus exporter to listen on
+    #[arg(long, default_value = "0.0.0.0:9090")]
+    pub prometheus_listen_addr: SocketAddr,
+
+    /// Whether to export receive-side metrics (bytes/packets)
+    #[arg(long, default_value_t = true)]
+    pub export_rx_metrics: bool,
+
+    /// Whether to export transmit-side metrics (bytes/packets)
+    #[arg(long, default_value_t = true)]
+    pub export_tx_metrics: bool,
 }
 
 #[derive(Clone)]
@@ -106,6 +135,8 @@ pub struct PrometheusExporter {
     cluster_tx_packets: IntCounterVec,
     http_request_bytes: IntCounterVec,
     http_response_bytes: IntCounterVec,
+    export_rx_metrics: bool,
+    export_tx_metrics: bool,
     http_addr: SocketAddr,
     server_task: Mutex<Option<JoinHandle<()>>>,
 }
@@ -122,7 +153,12 @@ impl Export for PrometheusExporter {
 }
 
 impl PrometheusExporter {
-    pub fn new(traffic_dumper: Arc<dyn TrafficDump>, http_addr: SocketAddr) -> Result<Self> {
+    pub fn new(
+        traffic_dumper: Arc<dyn TrafficDump>,
+        http_addr: SocketAddr,
+        export_rx_metrics: bool,
+        export_tx_metrics: bool,
+    ) -> Result<Self> {
         let registry = Registry::new();
         let nodeport_rx_bytes = Self::register_counter(
             &registry,
@@ -198,6 +234,8 @@ impl PrometheusExporter {
             cluster_tx_packets,
             http_request_bytes,
             http_response_bytes,
+            export_rx_metrics,
+            export_tx_metrics,
             http_addr,
             server_task: Mutex::new(None),
         })
@@ -262,40 +300,52 @@ impl PrometheusExporter {
             let label_refs: Vec<&str> = label_values.iter().map(|s| s.as_str()).collect();
             match traffic {
                 Traffic::NodePort(data) => {
-                    self.nodeport_rx_bytes
-                        .with_label_values(&label_refs)
-                        .inc_by(data.rx_bytes);
-                    self.nodeport_rx_packets
-                        .with_label_values(&label_refs)
-                        .inc_by(data.rx_packets);
-                    self.nodeport_tx_bytes
-                        .with_label_values(&label_refs)
-                        .inc_by(data.tx_bytes);
-                    self.nodeport_tx_packets
-                        .with_label_values(&label_refs)
-                        .inc_by(data.tx_packets);
+                    if self.export_rx_metrics {
+                        self.nodeport_rx_bytes
+                            .with_label_values(&label_refs)
+                            .inc_by(data.rx_bytes);
+                        self.nodeport_rx_packets
+                            .with_label_values(&label_refs)
+                            .inc_by(data.rx_packets);
+                    }
+                    if self.export_tx_metrics {
+                        self.nodeport_tx_bytes
+                            .with_label_values(&label_refs)
+                            .inc_by(data.tx_bytes);
+                        self.nodeport_tx_packets
+                            .with_label_values(&label_refs)
+                            .inc_by(data.tx_packets);
+                    }
                 }
                 Traffic::HttpGateway(data) => {
-                    self.http_request_bytes
-                        .with_label_values(&label_refs)
-                        .inc_by(data.request_bytes);
-                    self.http_response_bytes
-                        .with_label_values(&label_refs)
-                        .inc_by(data.response_bytes);
+                    if self.export_rx_metrics {
+                        self.http_request_bytes
+                            .with_label_values(&label_refs)
+                            .inc_by(data.request_bytes);
+                    }
+                    if self.export_tx_metrics {
+                        self.http_response_bytes
+                            .with_label_values(&label_refs)
+                            .inc_by(data.response_bytes);
+                    }
                 }
                 Traffic::Cluster(data) => {
-                    self.cluster_rx_bytes
-                        .with_label_values(&label_refs)
-                        .inc_by(data.rx_bytes);
-                    self.cluster_rx_packets
-                        .with_label_values(&label_refs)
-                        .inc_by(data.rx_packets);
-                    self.cluster_tx_bytes
-                        .with_label_values(&label_refs)
-                        .inc_by(data.tx_bytes);
-                    self.cluster_tx_packets
-                        .with_label_values(&label_refs)
-                        .inc_by(data.tx_packets);
+                    if self.export_rx_metrics {
+                        self.cluster_rx_bytes
+                            .with_label_values(&label_refs)
+                            .inc_by(data.rx_bytes);
+                        self.cluster_rx_packets
+                            .with_label_values(&label_refs)
+                            .inc_by(data.rx_packets);
+                    }
+                    if self.export_tx_metrics {
+                        self.cluster_tx_bytes
+                            .with_label_values(&label_refs)
+                            .inc_by(data.tx_bytes);
+                        self.cluster_tx_packets
+                            .with_label_values(&label_refs)
+                            .inc_by(data.tx_packets);
+                    }
                 }
             }
         }
