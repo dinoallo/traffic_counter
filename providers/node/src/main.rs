@@ -9,7 +9,7 @@ mod model;
 mod node;
 mod packet;
 #[derive(Parser)]
-#[command(name = "node")]
+#[command(name = "node-provider")]
 #[command(about = "Traffic counter node provider", long_about = None)]
 struct Cli {
     #[command(subcommand)]
