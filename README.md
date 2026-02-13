@@ -164,6 +164,16 @@ The runtime still needs `CAP_NET_RAW` and `CAP_BPF` (or `CAP_SYS_ADMIN` on older
 
 Example manifests live under `deploy/k8s/`. They provision a namespace, a service account, a tunable ConfigMap, and a per-node `DaemonSet` that runs the collector with host networking and the required Linux capabilities. Deploy them with `kubectl` or `kustomize`:
 
+The pod provider attaches eBPF programs inside each pod network namespace to `eth0` when present. It requires `CAP_NET_ADMIN` plus eBPF privileges and will skip namespaces that do not expose `eth0` or disappear during attachment.
+
+Manual verification (pod provider):
+- Ensure the pod provider is running with `CAP_NET_ADMIN` and eBPF capabilities.
+- Create a test pod and generate traffic (for example, `curl` from the pod).
+- Verify tc attachments inside the pod netns:
+  - `nsenter -t <pod-pid> -n tc filter show dev eth0 ingress`
+  - `nsenter -t <pod-pid> -n tc filter show dev eth0 egress`
+- Confirm logs show successful attachments and no fatal errors.
+
 ```bash
 kubectl apply -k deploy/k8s
 ```

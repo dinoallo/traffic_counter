@@ -1,0 +1,21 @@
+[package]
+name = "pod-provider-ebpf"
+version = "0.0.0-alpha"
+edition.workspace = true
+
+[dependencies]
+pod-provider-common = { workspace = true }
+
+aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+
+[[bin]]
+name = "pod-provider-ebpf"
+path = "src/main.rs"
+
+[[bin]]
+name = "pod-provider-ebpf-legacy"
+path = "src/main_legacy.rs"

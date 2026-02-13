@@ -1,0 +1,30 @@
+[package]
+name = "pod-provider"
+version = "0.0.0-alpha"
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true, default-features = true }
+aya = { workspace = true }
+aya-log = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing = { workspace = true }
+libc = { workspace = true }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt",
+    "rt-multi-thread",
+    "net",
+    "signal",
+] }
+clap = { workspace = true, features = ["derive"] }
+pod-provider-common = { workspace = true, features = ["user"] }
+[build-dependencies]
+anyhow = { workspace = true }
+aya-build = { workspace = true }
+cargo_metadata = { workspace = true }
+pod-provider-ebpf = { workspace = true }
+
+[[bin]]
+name = "pod-provider"
+path = "src/main.rs"
