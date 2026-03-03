@@ -23,6 +23,7 @@ aya-build = { git = "https://github.com/aya-rs/aya", default-features = false }
 aya-ebpf = { git = "https://github.com/aya-rs/aya", default-features = false }
 aya-log = { git = "https://github.com/aya-rs/aya", default-features = false }
 aya-log-ebpf = { git = "https://github.com/aya-rs/aya", default-features = false }
+bytes = { version = "1" }
 
 api = { path = "api" }
 pod-provider-common = { path = "providers/pod/pod-common" }

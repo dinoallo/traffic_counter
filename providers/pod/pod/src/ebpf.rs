@@ -111,6 +111,7 @@ impl EbpfManager {
         Ok(Self { attacher })
     }
 
+    /*
     pub fn load_programs(
         &self,
         ingress_prog: &mut SchedClassifier,
@@ -122,6 +123,7 @@ impl EbpfManager {
         debug!("eBPF programs loaded successfully");
         Ok(())
     }
+    */
 
     pub fn load_program(&self, prog: &mut SchedClassifier) -> Result<()> {
         debug!("Loading eBPF program");

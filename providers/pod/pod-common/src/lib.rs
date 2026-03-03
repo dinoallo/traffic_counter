@@ -1,6 +1,6 @@
 #![no_std]
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 #[repr(C)]
 pub struct Event {
     pub len: u32,
@@ -12,21 +12,6 @@ pub struct Event {
     pub remote_ipv6: [u32; 4],
     pub local_port: u32,
     pub remote_port: u32,
-}
-impl Default for Event {
-    fn default() -> Self {
-        Self {
-            len: 0,
-            protocol: 0,
-            family: 0,
-            local_ipv4: 0,
-            local_ipv6: [0; 4],
-            remote_ipv4: 0,
-            remote_ipv6: [0; 4],
-            local_port: 0,
-            remote_port: 0,
-        }
-    }
 }
 
 #[derive(Debug, Copy, Clone)]

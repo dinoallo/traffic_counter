@@ -18,6 +18,7 @@ tokio = { workspace = true, features = [
     "signal",
 ] }
 clap = { workspace = true, features = ["derive"] }
+bytes = { workspace = true }
 pod-provider-common = { workspace = true, features = ["user"] }
 [build-dependencies]
 anyhow = { workspace = true }

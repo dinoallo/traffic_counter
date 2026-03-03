@@ -1,6 +1,11 @@
 use anyhow::{Context, Result, anyhow};
+use aya::maps::{perf::PerfEventArray, ring_buf::RingBuf};
 use aya::programs::SchedClassifier;
-use pod_provider_common::Direction;
+use aya::util::online_cpus;
+use bytes::BytesMut;
+use pod_provider_common::{Direction, Event};
+use std::mem::size_of;
+use tokio::io::unix::AsyncFd;
 use tracing::{debug, info, warn};
 use tracing_subscriber::prelude::*;
 
@@ -62,6 +67,121 @@ fn attach_tc_programs(
     {
         let egress_prog = get_tc_program(ebpf, egress_prog_name, "egress")?;
         manager.attach(egress_prog, iface, Direction::Egress)?;
+    }
+    Ok(())
+}
+
+const RINGBUF_MAP_NAME: &str = "EVENTS";
+const PERF_EVENT_MAP_NAME: &str = "EVENTS_LEGACY";
+
+fn parse_event(source: &str, data: &[u8]) -> Option<Event> {
+    if data.len() < size_of::<Event>() {
+        warn!(
+            source,
+            data_len = data.len(),
+            expected_len = size_of::<Event>(),
+            "event buffer too small"
+        );
+        return None;
+    }
+    let event = unsafe { std::ptr::read_unaligned(data.as_ptr() as *const Event) };
+    Some(event)
+}
+
+fn log_event(source: &str, event: &Event) {
+    info!(
+        source,
+        len = event.len,
+        protocol = event.protocol,
+        family = event.family,
+        local_ipv4 = event.local_ipv4,
+        remote_ipv4 = event.remote_ipv4,
+        local_port = event.local_port,
+        remote_port = event.remote_port,
+        local_ipv6 = ?event.local_ipv6,
+        remote_ipv6 = ?event.remote_ipv6,
+        "received pod event"
+    );
+}
+
+fn spawn_ringbuf_consumer(ebpf: &mut aya::Ebpf) -> Result<()> {
+    let map = ebpf
+        .take_map(RINGBUF_MAP_NAME)
+        .ok_or_else(|| anyhow!(format!("ringbuf {} not found", RINGBUF_MAP_NAME)))?;
+    let ringbuf = RingBuf::try_from(map)
+        .map_err(|err| anyhow!(format!("failed to create ringbuf: {err:?}")))?;
+    let async_fd = AsyncFd::new(ringbuf)?;
+    tokio::task::spawn(async move {
+        let mut async_fd = async_fd;
+        loop {
+            let mut guard = match async_fd.readable_mut().await {
+                Ok(guard) => guard,
+                Err(err) => {
+                    warn!(error = %err, "ringbuf readiness error");
+                    continue;
+                }
+            };
+            while let Some(item) = guard.get_inner_mut().next() {
+                if let Some(event) = parse_event("ringbuf", item.as_ref()) {
+                    log_event("ringbuf", &event);
+                }
+            }
+            guard.clear_ready();
+        }
+    });
+    Ok(())
+}
+
+fn spawn_perf_event_consumers(ebpf: &mut aya::Ebpf) -> Result<()> {
+    let map = ebpf
+        .take_map(PERF_EVENT_MAP_NAME)
+        .ok_or_else(|| anyhow!(format!("perf array {} not found", PERF_EVENT_MAP_NAME)))?;
+    let mut perf_array = PerfEventArray::try_from(map)
+        .map_err(|err| anyhow!(format!("failed to create perf array: {err:?}")))?;
+    let cpu_ids =
+        online_cpus().map_err(|err| anyhow!(format!("failed to read online cpus: {err:?}")))?;
+    for cpu_id in cpu_ids {
+        let mut buf = perf_array.open(cpu_id, None).map_err(|err| {
+            anyhow!(format!(
+                "failed to open perf buffer on cpu {cpu_id}: {err:?}"
+            ))
+        })?;
+        tokio::task::spawn_blocking(move || {
+            let mut buffers = (0..16)
+                .map(|_| BytesMut::with_capacity(size_of::<Event>()))
+                .collect::<Vec<_>>();
+            loop {
+                match buf.read_events(&mut buffers) {
+                    Ok(events) => {
+                        if events.lost > 0 {
+                            warn!(cpu = cpu_id, lost = events.lost, "perf events lost");
+                        }
+                        for i in 0..events.read {
+                            let data = &buffers[i];
+                            if let Some(event) = parse_event("perf", data) {
+                                log_event("perf", &event);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        warn!(cpu = cpu_id, error = %err, "failed to read perf events");
+                    }
+                }
+            }
+        });
+    }
+    Ok(())
+}
+
+fn spawn_event_consumers(
+    ebpf: &mut aya::Ebpf,
+    supports_ringbuf: bool,
+    supports_perf: bool,
+) -> Result<()> {
+    if supports_ringbuf {
+        spawn_ringbuf_consumer(ebpf)?;
+    } else if supports_perf {
+        spawn_perf_event_consumers(ebpf)?;
     }
     Ok(())
 }
@@ -159,6 +279,7 @@ impl PodRuntime {
 
         let manager = EbpfManager::new()?;
         load_tc_programs(&manager, &mut ebpf, ingress_prog_name, egress_prog_name)?;
+        spawn_event_consumers(&mut ebpf, supports_ringbuf, supports_perf)?;
 
         let netns_entries = discover_pod_netns()?;
         info!(
@@ -196,7 +317,8 @@ impl PodRuntime {
                 &mut ebpf,
                 ingress_prog_name,
                 egress_prog_name,
-                "eth0",
+                "eth0", //TODO: support configurable iface name in the future, but for now we can just hardcode it to eth0
+                        // since that's the default iface name for kubenet and most CNI plugins
             );
             if let Err(err) = attach_result {
                 warn!(
