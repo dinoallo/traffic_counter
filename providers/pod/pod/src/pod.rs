@@ -1,11 +1,21 @@
 use anyhow::{Context, Result, anyhow};
+use api::proto::trafficcounter::v1::{
+    IngestTrafficRequest, traffic_ingestor_client::TrafficIngestorClient,
+};
+use api::{ClusterTraffic, L4Meta, Traffic};
 use aya::maps::{perf::PerfEventArray, ring_buf::RingBuf};
 use aya::programs::SchedClassifier;
 use aya::util::online_cpus;
 use bytes::BytesMut;
 use pod_provider_common::{Direction, Event};
+use std::convert::TryFrom;
 use std::mem::size_of;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::time::Duration;
 use tokio::io::unix::AsyncFd;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::transport::Channel;
 use tracing::{debug, info, warn};
 use tracing_subscriber::prelude::*;
 
@@ -88,23 +98,121 @@ fn parse_event(source: &str, data: &[u8]) -> Option<Event> {
     Some(event)
 }
 
-fn log_event(source: &str, event: &Event) {
-    info!(
-        source,
-        len = event.len,
-        protocol = event.protocol,
-        family = event.family,
-        local_ipv4 = event.local_ipv4,
-        remote_ipv4 = event.remote_ipv4,
-        local_port = event.local_port,
-        remote_port = event.remote_port,
-        local_ipv6 = ?event.local_ipv6,
-        remote_ipv6 = ?event.remote_ipv6,
-        "received pod event"
-    );
+fn ipv6_from_words(words: [u32; 4]) -> Ipv6Addr {
+    let mut bytes = [0u8; 16];
+    for (i, word) in words.iter().enumerate() {
+        bytes[i * 4..(i + 1) * 4].copy_from_slice(&word.to_be_bytes());
+    }
+    Ipv6Addr::from(bytes)
 }
 
-fn spawn_ringbuf_consumer(ebpf: &mut aya::Ebpf) -> Result<()> {
+fn event_to_cluster_traffic(source: &str, event: &Event) -> Option<ClusterTraffic> {
+    let protocol = match u8::try_from(event.protocol) {
+        Ok(value) => value,
+        Err(_) => {
+            warn!(source, value = event.protocol, "protocol out of range");
+            return None;
+        }
+    };
+    let local_port = match u16::try_from(event.local_port) {
+        Ok(value) => value,
+        Err(_) => {
+            warn!(source, value = event.local_port, "local port out of range");
+            return None;
+        }
+    };
+    let remote_port = match u16::try_from(event.remote_port) {
+        Ok(value) => value,
+        Err(_) => {
+            warn!(
+                source,
+                value = event.remote_port,
+                "remote port out of range"
+            );
+            return None;
+        }
+    };
+
+    let (local_ip, remote_ip) = match event.family {
+        family if family == libc::AF_INET as u32 => (
+            IpAddr::V4(Ipv4Addr::from(event.local_ipv4)),
+            IpAddr::V4(Ipv4Addr::from(event.remote_ipv4)),
+        ),
+        family if family == libc::AF_INET6 as u32 => (
+            IpAddr::V6(ipv6_from_words(event.local_ipv6)),
+            IpAddr::V6(ipv6_from_words(event.remote_ipv6)),
+        ),
+        _ => {
+            warn!(source, family = event.family, "unsupported address family");
+            return None;
+        }
+    };
+
+    let (rx_bytes, rx_packets, tx_bytes, tx_packets) = match event.direction {
+        direction if direction == Direction::Ingress as u32 => (event.len as u64, 1, 0, 0),
+        direction if direction == Direction::Egress as u32 => (0, 0, event.len as u64, 1),
+        _ => {
+            warn!(source, direction = event.direction, "unknown direction");
+            return None;
+        }
+    };
+
+    Some(ClusterTraffic {
+        l4_meta: L4Meta {
+            local_ip,
+            remote_ip,
+            local_port,
+            remote_port,
+            protocol,
+        },
+        rx_bytes,
+        rx_packets,
+        tx_bytes,
+        tx_packets,
+    })
+}
+
+fn event_to_ingest_request(source: &str, event: &Event) -> Option<IngestTrafficRequest> {
+    let traffic = event_to_cluster_traffic(source, event)?;
+    Some(IngestTrafficRequest {
+        traffic: Some(Traffic::Cluster(traffic).into()),
+    })
+}
+
+async fn run_grpc_manager(
+    client: TrafficIngestorClient<Channel>,
+    mut stable_rx: mpsc::Receiver<IngestTrafficRequest>,
+) {
+    let client = client;
+    loop {
+        let (stream_tx, stream_rx) = mpsc::channel(1024);
+        let request_stream = ReceiverStream::new(stream_rx);
+
+        let mut client_clone = client.clone();
+        let grpc_handle =
+            tokio::task::spawn(async move { client_clone.ingest_traffic(request_stream).await });
+
+        loop {
+            let req = match stable_rx.recv().await {
+                Some(req) => req,
+                None => return,
+            };
+
+            if stream_tx.send(req).await.is_err() {
+                warn!("gRPC stream broken, reconnecting");
+                break;
+            }
+        }
+
+        let _ = grpc_handle.await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+fn spawn_ringbuf_consumer(
+    ebpf: &mut aya::Ebpf,
+    sender: mpsc::Sender<IngestTrafficRequest>,
+) -> Result<()> {
     let map = ebpf
         .take_map(RINGBUF_MAP_NAME)
         .ok_or_else(|| anyhow!(format!("ringbuf {} not found", RINGBUF_MAP_NAME)))?;
@@ -113,6 +221,7 @@ fn spawn_ringbuf_consumer(ebpf: &mut aya::Ebpf) -> Result<()> {
     let async_fd = AsyncFd::new(ringbuf)?;
     tokio::task::spawn(async move {
         let mut async_fd = async_fd;
+        let sender = sender;
         loop {
             let mut guard = match async_fd.readable_mut().await {
                 Ok(guard) => guard,
@@ -123,7 +232,12 @@ fn spawn_ringbuf_consumer(ebpf: &mut aya::Ebpf) -> Result<()> {
             };
             while let Some(item) = guard.get_inner_mut().next() {
                 if let Some(event) = parse_event("ringbuf", item.as_ref()) {
-                    log_event("ringbuf", &event);
+                    if let Some(req) = event_to_ingest_request("ringbuf", &event) {
+                        if sender.send(req).await.is_err() {
+                            warn!("traffic channel closed");
+                            return;
+                        }
+                    }
                 }
             }
             guard.clear_ready();
@@ -132,7 +246,10 @@ fn spawn_ringbuf_consumer(ebpf: &mut aya::Ebpf) -> Result<()> {
     Ok(())
 }
 
-fn spawn_perf_event_consumers(ebpf: &mut aya::Ebpf) -> Result<()> {
+fn spawn_perf_event_consumers(
+    ebpf: &mut aya::Ebpf,
+    sender: mpsc::Sender<IngestTrafficRequest>,
+) -> Result<()> {
     let map = ebpf
         .take_map(PERF_EVENT_MAP_NAME)
         .ok_or_else(|| anyhow!(format!("perf array {} not found", PERF_EVENT_MAP_NAME)))?;
@@ -146,6 +263,7 @@ fn spawn_perf_event_consumers(ebpf: &mut aya::Ebpf) -> Result<()> {
                 "failed to open perf buffer on cpu {cpu_id}: {err:?}"
             ))
         })?;
+        let sender = sender.clone();
         tokio::task::spawn_blocking(move || {
             let mut buffers = (0..16)
                 .map(|_| BytesMut::with_capacity(size_of::<Event>()))
@@ -159,7 +277,12 @@ fn spawn_perf_event_consumers(ebpf: &mut aya::Ebpf) -> Result<()> {
                         for i in 0..events.read {
                             let data = &buffers[i];
                             if let Some(event) = parse_event("perf", data) {
-                                log_event("perf", &event);
+                                if let Some(req) = event_to_ingest_request("perf", &event) {
+                                    if sender.blocking_send(req).is_err() {
+                                        warn!("traffic channel closed");
+                                        return;
+                                    }
+                                }
                             }
                         }
                     }
@@ -177,11 +300,12 @@ fn spawn_event_consumers(
     ebpf: &mut aya::Ebpf,
     supports_ringbuf: bool,
     supports_perf: bool,
+    sender: mpsc::Sender<IngestTrafficRequest>,
 ) -> Result<()> {
     if supports_ringbuf {
-        spawn_ringbuf_consumer(ebpf)?;
+        spawn_ringbuf_consumer(ebpf, sender)?;
     } else if supports_perf {
-        spawn_perf_event_consumers(ebpf)?;
+        spawn_perf_event_consumers(ebpf, sender)?;
     }
     Ok(())
 }
@@ -206,6 +330,16 @@ impl PodRuntime {
             .with(tracing_subscriber::fmt::layer())
             .with(tracing_subscriber::EnvFilter::from_default_env()) // Reads RUST_LOG
             .init();
+
+        let client = TrafficIngestorClient::connect(config.server_addr.clone())
+            .await
+            .context("failed to connect to traffic-counter server")?;
+        info!("Connected to traffic-counter server");
+        let (stable_tx, stable_rx) = mpsc::channel(1024);
+        let manager_client = client.clone();
+        tokio::task::spawn(async move {
+            run_grpc_manager(manager_client, stable_rx).await;
+        });
         if !probe_memcg_based_accounting_support() {
             info!(
                 "kernel version is older than 5.11, try to bump memlock rlimit for compatibility"
@@ -279,7 +413,7 @@ impl PodRuntime {
 
         let manager = EbpfManager::new()?;
         load_tc_programs(&manager, &mut ebpf, ingress_prog_name, egress_prog_name)?;
-        spawn_event_consumers(&mut ebpf, supports_ringbuf, supports_perf)?;
+        spawn_event_consumers(&mut ebpf, supports_ringbuf, supports_perf, stable_tx)?;
 
         let netns_entries = discover_pod_netns()?;
         info!(

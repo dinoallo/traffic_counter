@@ -1705,6 +1705,7 @@ name = "pod-provider"
 version = "0.0.0-alpha"
 dependencies = [
  "anyhow",
+ "api",
  "aya",
  "aya-build",
  "aya-log",
@@ -1715,6 +1716,8 @@ dependencies = [
  "pod-provider-common",
  "pod-provider-ebpf",
  "tokio",
+ "tokio-stream",
+ "tonic",
  "tracing",
  "tracing-subscriber",
 ]

@@ -12,6 +12,7 @@ pub struct Event {
     pub remote_ipv6: [u32; 4],
     pub local_port: u32,
     pub remote_port: u32,
+    pub direction: u32,
 }
 
 #[derive(Debug, Copy, Clone)]

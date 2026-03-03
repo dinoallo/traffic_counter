@@ -63,6 +63,7 @@ fn count_traffic(ctx: TcContext, dir: Direction) -> Result<i32, i32> {
                 remote_ipv6: *ctx.skb.local_ipv6(),
                 local_port: ctx.skb.remote_port(),
                 remote_port: ctx.skb.local_port(),
+                direction: dir as u32,
             };
         }
         Direction::Egress => {
@@ -76,6 +77,7 @@ fn count_traffic(ctx: TcContext, dir: Direction) -> Result<i32, i32> {
                 remote_ipv6: *ctx.skb.remote_ipv6(),
                 local_port: ctx.skb.local_port(),
                 remote_port: ctx.skb.remote_port(),
+                direction: dir as u32,
             };
         }
     }

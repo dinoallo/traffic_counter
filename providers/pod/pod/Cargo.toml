@@ -16,9 +16,13 @@ tokio = { workspace = true, features = [
     "rt-multi-thread",
     "net",
     "signal",
+    "time",
 ] }
 clap = { workspace = true, features = ["derive"] }
 bytes = { workspace = true }
+api = { workspace = true }
+tokio-stream = "0.1"
+tonic = { version = "0.11", features = ["transport"] }
 pod-provider-common = { workspace = true, features = ["user"] }
 [build-dependencies]
 anyhow = { workspace = true }
