@@ -7,12 +7,13 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
 pub struct ReservedPortLabel {
     pub port: u16,
+    pub node_ip: String,
     // pub protocol: String,
 }
 
 impl Display for ReservedPortLabel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ReservedPort({})", self.port)
+        write!(f, "ReservedPort({}:{})", self.node_ip, self.port)
     }
 }
 
@@ -20,6 +21,8 @@ impl Display for ReservedPortLabel {
 pub struct K8sNodePortLabel {
     pub namespace: String,
     pub service_name: String,
+    pub port: u16,
+    pub node_ip: String,
     // pub port_name: String,
     // pub port_protocol: String,
     // pub node_port: u16,
@@ -29,8 +32,8 @@ impl Display for K8sNodePortLabel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "K8sNodePort(namespace: {}, service: {})",
-            self.namespace, self.service_name
+            "K8sNodePort(namespace: {}, service: {}, port: {}, node_ip: {})",
+            self.namespace, self.service_name, self.port, self.node_ip
         )
     }
 }
@@ -38,12 +41,13 @@ impl Display for K8sNodePortLabel {
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
 pub struct DynamicPortLabel {
     pub port: u16,
+    pub node_ip: String,
     // pub protocol: String,
 }
 
 impl Display for DynamicPortLabel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DynamicPort({})", self.port)
+        write!(f, "DynamicPort({}:{})", self.node_ip, self.port)
     }
 }
 
@@ -184,6 +188,8 @@ impl TrafficLabel<NodePortTraffic, NodePortLabel> for K8sTrafficLabeler {
         let l = NodePortLabel::K8sNode(K8sNodePortLabel {
             namespace: svc_meta.namespace,
             service_name: svc_meta.service_name,
+            port: traffic.l4_meta.local_port,
+            node_ip: traffic.l4_meta.local_ip.to_string(),
         });
         Ok(Some(l))
     }
@@ -199,10 +205,12 @@ impl TrafficLabel<NodePortTraffic, NodePortLabel> for TrafficLabeler {
         if traffic.l4_meta.local_port < 1024 {
             Ok(Some(NodePortLabel::Reserved(ReservedPortLabel {
                 port: traffic.l4_meta.local_port,
+                node_ip: traffic.l4_meta.local_ip.to_string(),
             })))
         } else {
             Ok(Some(NodePortLabel::Dynamic(DynamicPortLabel {
                 port: traffic.l4_meta.local_port,
+                node_ip: traffic.l4_meta.local_ip.to_string(),
             })))
         }
     }

@@ -129,13 +129,14 @@ impl LogExporter {
     }
 }
 
-const PROM_LABEL_DIMENSIONS: [&str; 6] = [
+const PROM_LABEL_DIMENSIONS: [&str; 7] = [
     "type",
     "namespace",
     "service_name",
     "pod_name",
     "host",
     "port",
+    "node_ip",
 ];
 const PROM_LABEL_DIMENSION_COUNT: usize = PROM_LABEL_DIMENSIONS.len();
 
@@ -400,6 +401,7 @@ impl PrometheusExporter {
             String::new(),
             String::new(),
             String::new(),
+            String::new(),
         ];
 
         match label {
@@ -407,15 +409,19 @@ impl PrometheusExporter {
                 NodePortLabel::Reserved(reserved) => {
                     values[0] = "nodeport_reserved".into();
                     values[5] = reserved.port.to_string();
+                    values[6] = reserved.node_ip.clone();
                 }
                 NodePortLabel::Dynamic(dynamic) => {
                     values[0] = "nodeport_dynamic".into();
                     values[5] = dynamic.port.to_string();
+                    values[6] = dynamic.node_ip.clone();
                 }
                 NodePortLabel::K8sNode(k8s) => {
                     values[0] = "nodeport_k8s_node".into();
                     values[1] = k8s.namespace.clone();
                     values[2] = k8s.service_name.clone();
+                    values[5] = k8s.port.to_string();
+                    values[6] = k8s.node_ip.clone();
                 }
             },
             Label::HttpGateway(gateway_label) => match gateway_label {
